@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>江西师范大学青山湖校区 · 校园导航与共享单车</title>
+  <link rel="stylesheet" href="vendor/leaflet.css" />
+  <link rel="stylesheet" href="vendor/leaflet-minimap.css" />
+  <link rel="stylesheet" href="vendor/Control.FullScreen.css" />
+  <link rel="stylesheet" href="vendor/element-plus.css" />
+  <link rel="stylesheet" href="vendor/driver.css" />
+  <link rel="stylesheet" href="css/app.css" />
+</head>
+<body>
+  <div id="app" v-cloak>
+    <div class="boot" v-if="!booted">
+      <div id="boot-particles" class="boot-particles"></div>
+      <div class="boot-card">
+        <div class="boot-spinner" v-if="!bootError"></div>
+        <div class="boot-title" :class="{ err: bootError }">{{ bootError ? '加载失败' : '正在加载校园导航引擎…' }}</div>
+        <div class="boot-sub">{{ bootError ? bootError : bootPhases[bootPhase] }}</div>
+        <div class="boot-dots" v-if="!bootError"><i v-for="(p, i) in bootPhases" :key="i" :class="{ on: i <= bootPhase }"></i></div>
+      </div>
+    </div>
+
+    <div class="layout" v-else>
+      <section class="map-side">
+        <div id="map" role="region" aria-label="校园地图：节点、路径与单车位置"></div>
+        <div class="map-title">
+          <div class="mt-main">江西师范大学青山湖校区</div>
+          <div class="mt-sub">校园导航与共享单车可视化</div>
+        </div>
+        <div class="map-tools">
+          <button class="tool-btn wide" :title="online ? '切换回离线矢量底图' : '切换在线底图（高德）'" aria-label="切换在线/离线底图" :aria-pressed="online" @click="toggleOnline">{{ online ? '离线底图' : '在线底图' }}</button>
+          <button class="tool-btn" title="回到全校视图" aria-label="回到全校视图" @click="fitAll">⛶</button>
+          <button class="tool-btn wide" title="演示引导" aria-label="演示引导" @click="startTour">演示</button>
+          <button class="tool-btn" title="自动演示（会修改数据，可刷新重置）" aria-label="自动演示" @click="startDemo">🎬</button>
+          <button class="tool-btn" :title="dark ? '切换亮色模式' : '切换夜模式'" aria-label="切换夜模式" :aria-pressed="dark" @click="toggleDark">{{ dark ? '☀' : '🌙' }}</button>
+          <button class="tool-btn" :title="soundOn ? '关闭提示音' : '开启提示音'" aria-label="切换提示音" :aria-pressed="soundOn" @click="toggleSound">{{ soundOn ? '🔊' : '🔈' }}</button>
+          <button class="tool-btn" :title="heat ? '关闭热力图' : '节点连接热力图'" aria-label="切换热力图" :aria-pressed="heat" @click="toggleHeat">🔥</button>
+        </div>
+        <div class="legend">
+          <span><i class="dot dot-intersection"></i>路口</span>
+          <span><i class="dot dot-building"></i>建筑</span>
+          <span><i class="dot dot-parking"></i>停车场</span>
+          <span><i class="dot dot-temp"></i>临时节点</span>
+          <span><i class="dot dot-bike"></i>单车</span>
+          <span><i class="dash"></i>路径</span>
+        </div>
+        <div class="pick-hint" v-if="pickHint">{{ pickHint }}</div>
+        <div id="demo-caption" aria-live="polite"></div>
+  <div id="cine-endcard" aria-hidden="true">
+    <div class="ce-title">校园导航与共享单车系统</div>
+    <div class="ce-sub">Dijkstra · BFS · Floyd-Warshall · C++17 → WebAssembly</div>
+  </div>
+      </section>
+
+      <aside class="panel">
+        <header class="panel-header">
+          <div class="ph-title">校园导航系统</div>
+          <div class="ph-stats">
+            <el-tag size="small" effect="plain" type="info">{{ statsView.nodes }} 节点</el-tag>
+            <el-tag size="small" effect="plain" type="info">{{ statsView.edges }} 路段</el-tag>
+            <el-tag size="small" effect="plain" type="success">{{ statsView.bikes }} 单车</el-tag>
+            <el-tag size="small" effect="plain" type="warning">{{ statsView.temps }} 临时</el-tag>
+          </div>
+        </header>
+
+        <el-tabs v-model="activeTab" class="panel-tabs" stretch>
+          <el-tab-pane label="路径查询" name="query">
+            <div class="pane-body">
+              <div class="field-row">
+                <el-select v-model="q.from" filterable clearable placeholder="起点（可输入搜索）" class="grow">
+                  <el-option v-for="n in nodeOptions" :key="'f' + n.id" :value="n.id" :label="n.label"></el-option>
+                </el-select>
+                <el-button @click="pickFor('from')">地图选点</el-button>
+              </div>
+              <div class="field-row">
+                <el-select v-model="q.to" filterable clearable placeholder="终点（可输入搜索）" class="grow">
+                  <el-option v-for="n in nodeOptions" :key="'t' + n.id" :value="n.id" :label="n.label"></el-option>
+                </el-select>
+                <el-button @click="pickFor('to')">地图选点</el-button>
+              </div>
+              <div class="btn-row">
+                <el-button type="primary" @click="doShortest">最短路径</el-button>
+                <el-button type="success" plain @click="doMinHops">最少跳数</el-button>
+              </div>
+
+              <el-divider content-position="left">多段导航</el-divider>
+              <el-select v-model="q.stops" multiple filterable clearable :multiple-limit="100" placeholder="依次选择 2 个以上节点" class="w-full">
+                <el-option v-for="n in nodeOptions" :key="'s' + n.id" :value="n.id" :label="n.label"></el-option>
+              </el-select>
+              <el-button class="w-full" @click="doMulti">开始多段导航</el-button>
+
+              <div class="result-card" v-if="qResult">
+                <div class="result-head">
+                  <span v-if="qKind === 'minhops'">最少 <b>{{ qHopsView }}</b> 跳</span>
+                  <span v-else>总距离 <b>{{ fmtDist(qDistView) }}</b> · {{ (qResult.path || []).length }} 个节点</span>
+                  <el-button link type="primary" @click="clearQuery">清除</el-button>
+                </div>
+                <div class="track-bar">
+                  <el-button size="small" :type="track.playing ? 'warning' : 'primary'" plain @click="trackToggle">{{ track.playing ? '暂停' : '回放' }}</el-button>
+                  <el-button size="small" plain @click="trackReplay">重播</el-button>
+                  <span class="track-progress">回放进度 {{ Math.round(track.progress * 100) }}%</span>
+                  <el-select v-model="track.speed" class="track-speed" size="small" @change="trackSetSpeed">
+                    <el-option :value="100" label="慢速" />
+                    <el-option :value="400" label="正常" />
+                    <el-option :value="800" label="快速" />
+                  </el-select>
+                </div>
+                <div class="seg-list" v-if="qResult.segments && qResult.segments.length">
+                  <div class="seg-row" v-for="(s, i) in qResult.segments" :key="i">
+                    <span class="seg-idx">{{ i + 1 }}</span>
+                    <span class="seg-names">{{ s.fromName }} → {{ s.toName }}</span>
+                    <span class="seg-dir">{{ segDir(s) }}</span>
+                  </div>
+                </div>
+                <div class="hop-names" v-else>{{ (qResult.names || []).join(' → ') }}</div>
+              </div>
+            </div>
+          </el-tab-pane>
+
+          <el-tab-pane label="共享单车" name="bike">
+            <div class="pane-body">
+              <div class="section-title">
+                单车列表
+                <el-tag v-if="bikesDirty" size="small" type="warning" effect="dark">未保存</el-tag>
+              </div>
+              <div class="bike-list">
+                <div class="bike-card" v-for="b in bikes" :key="b.bikeId" :class="'st-' + b.status">
+                  <div class="bc-head">
+                    <span class="bc-id">{{ b.bikeId }}</span>
+                    <el-tag size="small" :type="statusTagType(b.status)">{{ statusText(b.status) }}</el-tag>
+                  </div>
+                  <div class="bc-loc">{{ bikeLocation(b) }}</div>
+                  <div class="bc-actions">
+                    <el-button v-if="b.status === 'available' && b.nodeId !== 0" size="small" type="primary" @click="borrow(b)">借车</el-button>
+                    <el-button v-if="b.status === 'borrowed'" size="small" type="warning" @click="startReturn(b)">还车</el-button>
+                  </div>
+                </div>
+                <div v-if="!bikes.length" class="empty">暂无单车数据</div>
+              </div>
+              <el-divider content-position="left">工具</el-divider>
+              <el-button class="w-full" plain @click="pickFor('parking')">点选位置查询最近停车场</el-button>
+            </div>
+          </el-tab-pane>
+
+          <el-tab-pane label="数据管理" name="data">
+            <div class="pane-body">
+              <div class="section-title">
+                保存
+                <el-tag v-if="bikesDirty || tempsDirty" size="small" type="warning" effect="dark">有未保存修改</el-tag>
+                <el-tag v-else size="small" type="success" effect="plain">已同步</el-tag>
+              </div>
+              <el-button type="primary" class="w-full" :loading="saving" @click="doSave">保存并下载 bikes.csv / temps.csv</el-button>
+              <div class="hint">保存与导入语义与控制台程序一致：nodes / edges 为内置数据不参与导入导出；刷新页面可恢复初始数据。</div>
+
+              <el-divider content-position="left">导入</el-divider>
+              <input ref="bikesInput" type="file" accept=".csv,text/csv" class="hidden-file" @change="onBikesFile" />
+              <input ref="tempsInput" type="file" accept=".csv,text/csv" class="hidden-file" @change="onTempsFile" />
+              <div class="btn-row">
+                <el-button @click="bikesInput.click()">导入 bikes.csv</el-button>
+                <el-button @click="tempsInput.click()">导入 temps.csv</el-button>
+              </div>
+
+              <el-divider content-position="left">临时节点</el-divider>
+              <div class="temp-list">
+                <div class="temp-row" v-for="t in temps" :key="t.nodeId">
+                  <span class="tr-id">{{ t.displayId }}</span>
+                  <span class="tr-pos">{{ t.lat.toFixed(6) }}, {{ t.lon.toFixed(6) }}</span>
+                  <el-button size="small" type="danger" plain @click="removeTemp(t)">删除</el-button>
+                </div>
+                <div v-if="!temps.length" class="empty">暂无临时节点</div>
+              </div>
+              <el-button class="w-full" plain @click="pickFor('temp')">点选位置添加临时节点</el-button>
+              <el-button class="w-full" plain style="margin-top: 8px;" @click="repairGhosts">修复位置缺失单车（自动恢复）</el-button>
+            </div>
+          </el-tab-pane>
+          <el-tab-pane label="数据洞察" name="insight">
+            <div class="section-title">图结构统计（数据来自 WASM 桥层）</div>
+            <div id="chart-degree" class="chart-box"></div>
+            <div id="chart-types" class="chart-box"></div>
+            <div id="chart-weights" class="chart-box"></div>
+            <div id="chart-3d" class="chart-box"></div>
+            <div class="hint">图表仅做可视化：度数分布看路网结构，类型分布看节点构成，路段长度看权重分布；3D 柱群展示连接度最强的节点。</div>
+          </el-tab-pane>
+        </el-tabs>
+      </aside>
+    </div>
+  </div>
+
+  <script src="vendor/vue.global.prod.js"></script>
+  <script src="vendor/element-plus.full.min.js"></script>
+  <script src="vendor/element-plus-locale-zh-cn.js"></script>
+  <script src="vendor/leaflet.js"></script>
+  <script src="vendor/leaflet.geometryutil.js"></script>
+  <script src="vendor/leaflet-arrowheads.js"></script>
+  <script src="vendor/leaflet-ant-path.js"></script>
+  <script src="vendor/leaflet-trackplayer.umd.js"></script>
+  <script src="vendor/leaflet-minimap.js"></script>
+  <script src="vendor/Control.FullScreen.umd.js"></script>
+  <script src="dist/campus_core.js"></script>
+  <script src="dist/data_campus.js"></script>
+  <script src="vendor/confetti.browser.js"></script>
+  <script src="vendor/fireworks.umd.js"></script>
+  <script src="vendor/driver.js.iife.js"></script>
+  <script src="vendor/gsap.min.js"></script>
+  <script src="vendor/SplitText.min.js"></script>
+  <script src="vendor/CustomEase.min.js"></script>
+  <script src="vendor/MotionPathPlugin.min.js"></script>
+  <script src="vendor/echarts.min.js"></script>
+  <script src="vendor/echarts-gl.min.js"></script>
+  <script src="vendor/leaflet-heat.js"></script>
+  <script src="vendor/auto-animate.iife.js"></script>
+  <script src="vendor/tsparticles.slim.bundle.min.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/map.js"></script>
+  <script src="js/app.js"></script>
+  <div id="fx-layer" aria-hidden="true"></div>
+</body>
+</html>
