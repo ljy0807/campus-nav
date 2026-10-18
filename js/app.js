@@ -25,10 +25,19 @@
       const saving = ref(false);
       const bikesInput = ref(null);
       const tempsInput = ref(null);
-      const dark = ref(false);        // 夜模式（纯视觉，body.dark）
-      const soundOn = ref(false);     // 提示音（默认关闭，WebAudio 零素材）
+      // 设置持久化（localStorage，命名空间 campusNav.*）：只存开关状态，读失败一律回退默认值
+      const SETTING_KEYS = { dark: 'campusNav.dark', soundOn: 'campusNav.soundOn', heat: 'campusNav.heat' };
+      function readSetting(key) {
+        try { return localStorage.getItem(key) === '1'; } catch (e) { return false; }
+      }
+      function writeSetting(key, on) {
+        try { localStorage.setItem(key, on ? '1' : '0'); } catch (e) { /* 存储不可用不影响功能 */ }
+      }
+      const dark = ref(readSetting(SETTING_KEYS.dark));       // 夜模式（纯视觉，body.dark；启动恢复）
+      const soundOn = ref(readSetting(SETTING_KEYS.soundOn)); // 提示音（WebAudio 零素材；启动恢复）
       const track = reactive({ playing: false, progress: 0, speed: 400 }); // 回放控制条状态
-      const heat = ref(false);        // 节点连接热力图开关（纯视觉）
+      const heat = ref(readSetting(SETTING_KEYS.heat));       // 节点连接热力图开关（纯视觉；启动后随 refreshAll 恢复渲染）
+      if (dark.value) document.body.classList.add('dark'); // 先于首帧恢复夜模式，避免启动闪白
       let chartsInited = false;       // 数据洞察图表是否已初始化
       let chartDeg = null, chartTypes = null, chartWeights = null, chart3d = null;
 
@@ -39,10 +48,42 @@
         }))
       );
 
+      // 节点搜索（pinyin-pro 本地化）：中文 / 全拼 / 首字母 / 编号混合匹配；
+      // 库缺失时退回原有子串匹配。匹配只影响下拉候选，不改变已选值（仍是节点 id）。
+      const nodeQuery = ref('');
+      const nodeSearchIndex = computed(() => {
+        const map = new Map();
+        const pp = window.pinyinPro;
+        const hasPy = !!(pp && typeof pp.pinyin === 'function');
+        for (const n of graphNodes.value) {
+          const base = n.isTemp ? 'T' + -n.id : n.name;
+          let key = '';
+          if (hasPy) {
+            try {
+              const full = pp.pinyin(base, { toneType: 'none', type: 'array' }).join('');
+              const ini = pp.pinyin(base, { pattern: 'first', toneType: 'none', type: 'array' }).join('');
+              key = (full + ' ' + ini).toLowerCase();
+            } catch (e) { key = ''; }
+          }
+          map.set(n.id, key);
+        }
+        return map;
+      });
+      const nodeOptionsView = computed(() => {
+        const qs = nodeQuery.value.trim().toLowerCase();
+        if (!qs) return nodeOptions.value;
+        const idx = nodeSearchIndex.value;
+        return nodeOptions.value.filter((o) => o.label.toLowerCase().includes(qs) || (idx.get(o.id) || '').includes(qs));
+      });
+      function nodeFilter(v) { nodeQuery.value = String(v == null ? '' : v); }
+      function onNodeMenuToggle(visible) { if (!visible) nodeQuery.value = ''; } // 关闭下拉即清空搜索
+
       // ---------- 查询 ----------
       const q = reactive({ from: null, to: null, stops: [] });
       const qResult = ref(null);
       const qKind = ref('');
+      const qRoutes = ref([]);  // 三条推荐路线的完整列表（qKind === 'top3' 时有效）
+      const qRouteIdx = ref(0); // 当前选中/绘制的是第几条（0 起）
       const qDistView = ref(0); // 结果卡数字滚动（总距离，米）
       const qHopsView = ref(0); // 结果卡数字滚动（最少跳数）
 
@@ -105,7 +146,16 @@
         // 只重绘不重播：动画与自动回放关闭，回放状态由 onTrackHalt 统一复位
         if (qResult.value && qResult.value.path) {
           MapCtl.drawPath(qResult.value.path, { animate: false, autoplay: false, fit: false, speed: track.speed });
+          // drawPath 内部 clearPath 会清掉灰色备选线，三线模式下需按当前选中重画
+          if (qKind.value === 'top3' && qRoutes.value.length > 1) {
+            MapCtl.drawVariants(qRoutes.value.filter((_, j) => j !== qRouteIdx.value).map((x) => x.path));
+          }
         }
+      }
+
+      // 节点签名：id:lat:lon 拼接；用于识别同 T-id 但坐标已变（重新导入）的失效查询
+      function nodeSignature() {
+        return graphNodes.value.map((n) => n.id + ':' + n.lat + ':' + n.lon).join('|');
       }
 
       // 图数据变化后清理失效的查询引用（起点/终点/多段站点/结果卡/残路/还车点选）
@@ -118,10 +168,21 @@
           q.stops = q.stops.filter((id) => present.has(id));
           changed = true;
         }
+        // 节点 ID 仍在但坐标已变（同 T-id 重导入）：签名不一致同样视为失效
+        if (qResult.value && qResult.value._nodeSig && qResult.value._nodeSig !== nodeSignature()) {
+          qResult.value = null;
+          qKind.value = '';
+          qRoutes.value = [];
+          qRouteIdx.value = 0;
+          MapCtl.clearPath();
+          changed = true;
+        }
         const path = qResult.value && qResult.value.path;
         if (path && path.some((id) => !present.has(id))) {
           qResult.value = null;
           qKind.value = '';
+          qRoutes.value = [];
+          qRouteIdx.value = 0;
           MapCtl.clearPath();
           changed = true;
         }
@@ -140,6 +201,7 @@
       // ---------- 查询动作 ----------
       function doShortest(opts) {
         if (q.from == null || q.to == null) return ElMessage.warning('请先选择起点和终点');
+        traceStop(); // 新查询顶替当前逐步演示
         const r = Api.shortestPath(q.from, q.to);
         if (!r.ok) {
           qResult.value = null;
@@ -148,6 +210,7 @@
         }
         qKind.value = 'shortest';
         qResult.value = r;
+        r._nodeSig = nodeSignature(); // 记录当时的图节点签名（临时节点重导入后坐标变化时作废）
         qDistView.value = 0;
         tweenNumber(0, r.dist, (v) => { qDistView.value = v; }, 650, 'dist');
         MapCtl.drawPath(r.path, { speed: track.speed, follow: !!(opts && opts.follow) });
@@ -159,6 +222,7 @@
 
       function doMinHops(opts) {
         if (q.from == null || q.to == null) return ElMessage.warning('请先选择起点和终点');
+        traceStop(); // 新查询顶替当前逐步演示
         const r = Api.minHops(q.from, q.to);
         if (!r.ok) {
           qResult.value = null;
@@ -167,6 +231,7 @@
         }
         qKind.value = 'minhops';
         qResult.value = r;
+        r._nodeSig = nodeSignature(); // 记录当时的图节点签名（临时节点重导入后坐标变化时作废）
         qHopsView.value = 0;
         tweenNumber(0, r.hops, (v) => { qHopsView.value = Math.round(v); }, 650, 'hops');
         MapCtl.drawPath(r.path, { speed: track.speed, follow: !!(opts && opts.follow) });
@@ -178,6 +243,7 @@
       function doMulti(opts) {
         if (!q.stops || q.stops.length < 2) return ElMessage.warning('多段导航至少选择 2 个节点');
         if (q.stops.length > 100) return ElMessage.warning('站点数量需在 2 ~ 100 之间');
+        traceStop(); // 新查询顶替当前逐步演示
         const r = Api.multiStep(q.stops.join(','));
         if (!r.ok) {
           qResult.value = null;
@@ -186,6 +252,7 @@
         }
         qKind.value = 'multi';
         qResult.value = r;
+        r._nodeSig = nodeSignature(); // 记录当时的图节点签名（临时节点重导入后坐标变化时作废）
         qDistView.value = 0;
         tweenNumber(0, r.dist, (v) => { qDistView.value = v; }, 650, 'dist');
         MapCtl.drawPath(r.path, { speed: (opts && opts.speed) || track.speed, follow: !!(opts && opts.follow) });
@@ -195,13 +262,174 @@
         if (typeof confetti === 'function') confetti({ particleCount: 60, spread: 55, origin: { y: 0.35 } });
       }
 
+      // 三条推荐路线（Yen K 短路，K=3）：业务逻辑全在 src/，此处只做选择与渲染
+      function doTopPaths(opts) {
+        if (q.from == null || q.to == null) return ElMessage.warning('请先选择起点和终点');
+        traceStop(); // 新查询顶替当前逐步演示
+        const r = Api.topPaths(q.from, q.to, 3);
+        if (!r.ok) {
+          qResult.value = null;
+          qRoutes.value = [];
+          qKind.value = '';
+          MapCtl.clearPath();
+          return ElMessage.error(r.error);
+        }
+        qKind.value = 'top3';
+        qRoutes.value = r.routes || [];
+        qRouteIdx.value = 0;
+        drawRouteAt(0, opts);
+        beep(520, 0.08);
+        if (typeof confetti === 'function') confetti({ particleCount: 60, spread: 55, origin: { y: 0.35 } });
+      }
+
+      // 选中并绘制第 i 条推荐路线；其余路线以灰色备选折线叠加展示
+      function drawRouteAt(i, opts) {
+        const r = qRoutes.value[i];
+        if (!r) return;
+        qRouteIdx.value = i;
+        qResult.value = r; // 复用结果卡（距离/分段/回放）
+        r._nodeSig = nodeSignature(); // 记录当时的图节点签名（临时节点重导入后坐标变化时作废）
+        qDistView.value = 0;
+        tweenNumber(0, r.dist, (v) => { qDistView.value = v; }, 650, 'dist');
+        MapCtl.drawPath(r.path, { speed: track.speed, follow: !!(opts && opts.follow) });
+        MapCtl.drawVariants(qRoutes.value.filter((_, j) => j !== i).map((x) => x.path));
+        track.playing = true;
+        track.progress = 0;
+      }
+
+      function pickRoute(i) {
+        drawRouteAt(i);
+      }
+
       function clearQuery() {
+        traceStop(); // 清空结果同时停止逐步演示
         qResult.value = null;
         qKind.value = '';
+        qRoutes.value = [];
+        qRouteIdx.value = 0;
         qDistView.value = 0;
         qHopsView.value = 0;
         MapCtl.clearPath();
         MapCtl.clearMisc();
+      }
+
+      // 途经顺序列表（SortableJS 拖拽排序；独立于 el-select 多选，仅调整 q.stops 顺序）
+      const stopsListEl = ref(null);
+      let stopsSortable = null;
+      function stopName(id) {
+        const n = graphNodes.value.find((x) => x.id === id);
+        return n ? (n.isTemp ? 'T' + -n.id + '（临时节点）' : n.name + '（#' + n.id + '）') : '节点 #' + id;
+      }
+      function syncStopsSortable() {
+        try {
+          if (!window.Sortable) return;
+          const el = stopsListEl.value;
+          if (el && !stopsSortable) {
+            stopsSortable = window.Sortable.create(el, {
+              animation: 150,
+              ghostClass: 'stop-ghost',
+              onEnd: () => {
+                const ids = Array.from(el.querySelectorAll('.stop-row')).map((row) => Number(row.dataset.id));
+                if (ids.length === q.stops.length && ids.every((x) => x !== 0)) q.stops = ids; // 与 Vue 数组对齐（长度一致才写回）
+              }
+            });
+          } else if (!el && stopsSortable) {
+            stopsSortable.destroy();
+            stopsSortable = null;
+          }
+        } catch (e) { /* 拖拽库缺失/失败不影响查询 */ }
+      }
+      watch(() => q.stops.length, () => nextTick(syncStopsSortable));
+
+      // ---------- 逐步演示（Dijkstra 确定顺序；只读接口，区别于沿最终路径行走的「回放」） ----------
+      const traceRunning = ref(false);
+      const traceCaption = ref('');
+      let traceToken = null;
+      const TRACE_TAIL_MS = 1600; // 演示完成后的高亮/字幕停留时间
+      function traceStop() {
+        traceToken = null;
+        traceRunning.value = false;
+        traceCaption.value = '';
+        MapCtl.traceClear();
+      }
+      function traceToggle() {
+        if (traceRunning.value) { traceStop(); return; }
+        if (q.from == null || q.to == null) return ElMessage.warning('请先选择起点和终点');
+        const r = Api.dijkstraTrace(q.from, q.to);
+        if (!r.ok) return ElMessage.error(r.error);
+        const order = r.order || [];
+        if (r.dist < 0 || !order.length) return ElMessage.error('两点之间不可达，无法演示');
+        const token = {};
+        traceToken = token;
+        traceRunning.value = true;
+        const delay = order.length > 60 ? 120 : order.length > 30 ? 200 : 320; // 节点多则提速，避免演示过长
+        let i = 0;
+        const step = () => {
+          if (traceToken !== token) return;
+          if (i >= order.length) {
+            traceCaption.value = '逐步演示完成 · 共确定 ' + order.length + ' 个节点 · 终点最短距离 ' + fmtDist(r.dist);
+            traceRunning.value = false;
+            setTimeout(() => { if (traceToken === token) traceStop(); }, TRACE_TAIL_MS);
+            return;
+          }
+          const it = order[i++];
+          MapCtl.traceHighlight(it.id);
+          traceCaption.value = '逐步演示 ' + i + '/' + order.length + ' · 确定「' + it.name + '」（#' + it.id + '）· 当前最短距离 ' + fmtDist(it.dist);
+          setTimeout(step, delay);
+        };
+        step();
+      }
+
+      // ---------- 分享链接（LZ-String；压入 location.hash，启动时保守预填不自动查询） ----------
+      async function shareQuery() {
+        if (q.from == null && q.to == null && !(q.stops && q.stops.length)) {
+          return ElMessage.warning('请先选择起点/终点或途经点，再生成分享链接');
+        }
+        if (!window.LZString || typeof LZString.compressToEncodedURIComponent !== 'function') {
+          return ElMessage.warning('分享组件未加载');
+        }
+        let packed = '';
+        try {
+          packed = LZString.compressToEncodedURIComponent(JSON.stringify({ f: q.from, t: q.to, s: (q.stops || []).slice() }));
+        } catch (e) { packed = ''; }
+        if (!packed) return ElMessage.warning('分享链接生成失败');
+        const url = location.href.split('#')[0] + '#q=' + packed;
+        location.hash = 'q=' + packed; // 同步压入地址栏，方便直接复制整条地址
+        let copied = false;
+        try {
+          await navigator.clipboard.writeText(url);
+          copied = true;
+        } catch (e) { copied = false; } // file:// / 未授权时回退手动复制
+        if (copied) {
+          ElMessage.success('分享链接已复制到剪贴板');
+        } else {
+          ElMessageBox.prompt('当前环境无法自动复制，请手动复制以下链接：', '分享查询', {
+            inputValue: url, confirmButtonText: '完成', cancelButtonText: '关闭'
+          }).catch(() => {});
+        }
+      }
+
+      // 启动恢复：解析 #q= 压缩载荷，仅预填表单并提示（保守：不自动执行查询）
+      function applyShareHash() {
+        try {
+          const m = /(?:^|[#&])q=([^&]+)/.exec(location.hash || '');
+          if (!m || !window.LZString || typeof LZString.decompressFromEncodedURIComponent !== 'function') return false;
+          const raw = LZString.decompressFromEncodedURIComponent(decodeURIComponent(m[1]));
+          if (!raw) return false;
+          const d = JSON.parse(raw);
+          const present = new Set(graphNodes.value.map((n) => n.id));
+          let restored = 0;
+          if (d && present.has(d.f)) { q.from = d.f; restored++; }
+          if (d && present.has(d.t)) { q.to = d.t; restored++; }
+          if (d && Array.isArray(d.s)) {
+            const stops = d.s.filter((x) => present.has(x));
+            if (stops.length) { q.stops = stops; restored += stops.length; }
+          }
+          if (!restored) return false;
+          activeTab.value = 'query';
+          ElMessage.info('已从分享链接恢复查询条件，请核对后点击「最短路径」执行');
+          return true;
+        } catch (e) { return false; }
       }
 
       // ---------- 借还车 ----------
@@ -244,15 +472,51 @@
         pickFor('return', b);
       }
 
+      // ---------- 坐标输入降级（键盘可达）：地图点选之外的替代入口 ----------
+      // 只做坐标语法与范围校验（含 (0,0) 哨兵拒绝）；吸附/停车场/还车语义仍全部由桥层判定
+      async function promptLatLon(title) {
+        let val = '';
+        try {
+          const r = await ElMessageBox.prompt('请输入「纬度,经度」', title, {
+            confirmButtonText: '确定', cancelButtonText: '取消',
+            inputPlaceholder: '纬度,经度（例如 28.677800,115.925400）'
+          });
+          val = r && r.value != null ? String(r.value) : '';
+        } catch (e) {
+          return null; // 用户取消：不提示错误
+        }
+        const parts = val.split(',');
+        if (parts.length !== 2) {
+          ElMessage.error('坐标格式错误：请输入「纬度,经度」（例如 28.677800,115.925400）');
+          return null;
+        }
+        const lat = Number(parts[0].trim());
+        const lng = Number(parts[1].trim());
+        if (!isFinite(lat) || !isFinite(lng)) {
+          ElMessage.error('坐标必须是数字：请输入「纬度,经度」（例如 28.677800,115.925400）');
+          return null;
+        }
+        if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+          ElMessage.error('坐标超出范围：纬度 -90 ~ 90，经度 -180 ~ 180');
+          return null;
+        }
+        if (lat === 0 || lng === 0) {
+          ElMessage.error('纬度和经度不能为 0（(0,0) 是无效位置哨兵）');
+          return null;
+        }
+        return { lat: lat, lng: lng };
+      }
+
       async function doReturnAt(b, latlng) {
         MapCtl.showPick(latlng, b.bikeId);
         let msg = '还车位置：(' + latlng.lat.toFixed(6) + ', ' + latlng.lng.toFixed(6) + ')<br>';
         const rp = Api.returnPreview(latlng.lat, latlng.lng);
+        if (rp.ok && rp.radius > 0) MapCtl.showRadius(latlng, rp.radius); // 与自动演示同口径：显示停车半径圈（纯渲染）
         if (rp.ok) {
           const rad = rp.radius; // 桥层已返回生效半径（radius>0 或默认 10），无需再兜底
           msg += rp.covered
-            ? '距停车场「' + rp.name + '」约 ' + fmtDist(rp.dist) + ' 米（停放半径 ' + fmtDist(rad) + ' 米），将归位到该停车场。'
-            : '距最近停车场「' + rp.name + '」约 ' + fmtDist(rp.dist) + ' 米（超出其停放半径 ' + fmtDist(rad) + ' 米），将创建临时节点（挂靠该停车场）。';
+            ? '距停车场「' + esc(rp.name) + '」约 ' + fmtDist(rp.dist) + ' 米（停放半径 ' + fmtDist(rad) + ' 米），将归位到该停车场。'
+            : '距最近停车场「' + esc(rp.name) + '」约 ' + fmtDist(rp.dist) + ' 米（超出其停放半径 ' + fmtDist(rad) + ' 米），将创建临时节点（挂靠该停车场）。';
         }
         try {
           await ElMessageBox.confirm(msg + '<br>确认还车？', '还车确认', {
@@ -273,12 +537,19 @@
         rerenderGraph();
       }
 
+      // 坐标输入还车：与地图点选共用同一桥层流程（doReturnAt）
+      async function promptReturn(b) {
+        const ll = await promptLatLon('输入还车坐标');
+        if (!ll) return;
+        await doReturnAt(b, ll);
+      }
+
       // ---------- 临时节点 ----------
       async function doAddTempAt(latlng) {
         MapCtl.showPick(latlng, '新临时节点');
         const np = Api.nearestParking(latlng.lat, latlng.lng);
         const pid = np.ok ? np.parkingId : 0;
-        const pkName = np.ok ? np.name + '（约 ' + fmtDist(np.dist) + ' 米）' : '无';
+        const pkName = np.ok ? esc(np.name) + '（约 ' + fmtDist(np.dist) + ' 米）' : '无';
         try {
           await ElMessageBox.confirm(
             '位置：(' + latlng.lat.toFixed(6) + ', ' + latlng.lng.toFixed(6) + ')<br>挂靠停车场：' + pkName +
@@ -298,6 +569,13 @@
         ElMessage.success(r.msg);
         refreshAll();
         rerenderGraph();
+      }
+
+      // 坐标输入添加临时节点：与地图点选共用同一桥层流程（doAddTempAt）
+      async function promptAddTemp() {
+        const ll = await promptLatLon('输入临时节点坐标');
+        if (!ll) return;
+        await doAddTempAt(ll);
       }
 
       async function removeTemp(t) {
@@ -399,11 +677,26 @@
           { confirmButtonText: '导入', cancelButtonText: '取消', type: 'warning' }
         ).then(() => {
           readFileText(file, (text) => {
-            const r = Api.importBikes(text);
-            if (!r.ok) return ElMessage.error(r.error);
-            ElMessage.success('已导入 ' + r.count + ' 辆单车' + (r.fixed > 0 ? '（修复悬空引用 ' + r.fixed + ' 处）' : '') + (r.skipped > 0 ? '（跳过 ' + r.skipped + ' 行异常数据）' : ''));
-            refreshAll();
-            rerenderGraph();
+            // 先预检后提交（P2）：异常行会被跳过且不会进入新存档；
+            // 存在异常行时先二次确认，避免用户误以为整份都导入了
+            const pre = Api.precheckBikes(text);
+            if (!pre.ok) return ElMessage.error(pre.error);
+            const commit = () => {
+              const r = Api.importBikes(text);
+              if (!r.ok) return ElMessage.error(r.error);
+              ElMessage.success('已导入 ' + r.count + ' 辆单车' + (r.fixed > 0 ? '（修复悬空引用 ' + r.fixed + ' 处）' : '') + (r.skipped > 0 ? '（跳过 ' + r.skipped + ' 行异常数据）' : ''));
+              refreshAll();
+              rerenderGraph();
+            };
+            if (pre.skipped > 0) {
+              ElMessageBox.confirm(
+                '解析到 ' + pre.count + ' 行有效、' + pre.skipped + ' 行格式异常；异常行将被跳过，且不会进入新存档（原文件不受影响）。继续导入？',
+                '部分行无法导入',
+                { confirmButtonText: '继续导入', cancelButtonText: '取消', type: 'warning' }
+              ).then(commit).catch(() => {});
+            } else {
+              commit();
+            }
           });
         }).catch(() => {});
       }
@@ -420,11 +713,25 @@
           { confirmButtonText: '导入', cancelButtonText: '取消', type: 'warning' }
         ).then(() => {
           readFileText(file, (text) => {
-            const r = Api.importTemps(text);
-            if (!r.ok) return ElMessage.error(r.error);
-            ElMessage.success('已导入 ' + r.count + ' 个临时节点' + (r.fixed > 0 ? '（修复悬空引用 ' + r.fixed + ' 处）' : '') + (r.skipped > 0 ? '（跳过 ' + r.skipped + ' 行异常数据）' : ''));
-            refreshAll();
-            rerenderGraph();
+            // 先预检后提交（P2）：同 onBikesFile，异常行需二次确认
+            const pre = Api.precheckTemps(text);
+            if (!pre.ok) return ElMessage.error(pre.error);
+            const commit = () => {
+              const r = Api.importTemps(text);
+              if (!r.ok) return ElMessage.error(r.error);
+              ElMessage.success('已导入 ' + r.count + ' 个临时节点' + (r.fixed > 0 ? '（修复悬空引用 ' + r.fixed + ' 处）' : '') + (r.skipped > 0 ? '（跳过 ' + r.skipped + ' 行异常数据）' : ''));
+              refreshAll();
+              rerenderGraph();
+            };
+            if (pre.skipped > 0) {
+              ElMessageBox.confirm(
+                '解析到 ' + pre.count + ' 个有效、' + pre.skipped + ' 行格式异常；异常行将被跳过，且不会进入新存档（原文件不受影响）。继续导入？',
+                '部分行无法导入',
+                { confirmButtonText: '继续导入', cancelButtonText: '取消', type: 'warning' }
+              ).then(commit).catch(() => {});
+            } else {
+              commit();
+            }
           });
         }).catch(() => {});
       }
@@ -487,11 +794,13 @@
 
       function toggleSound() {
         soundOn.value = !soundOn.value;
+        writeSetting(SETTING_KEYS.soundOn, soundOn.value);
         if (soundOn.value) beep(660, 0.12); // 开启时给一声反馈
       }
 
       function toggleDark() {
         dark.value = !dark.value;
+        writeSetting(SETTING_KEYS.dark, dark.value);
         document.body.classList.toggle('dark', dark.value);
         updateCharts(); // 图表墨色随夜模式同步（纯展示）
       }
@@ -508,6 +817,13 @@
       function trackSetSpeed(v) {
         track.speed = v;
         MapCtl.trackSetSpeed(v);
+      }
+      // 拖动进度条定位（优先原生 input[type=range]；与 track 对象联动，播放态由 vendor 继续推进）
+      function trackSeekOnInput(e) {
+        const playing = MapCtl.trackSeek(Number(e.target.value) / 1000);
+        if (playing == null) return;
+        track.progress = Number(e.target.value) / 1000;
+        track.playing = playing;
       }
       MapCtl.onTrackProgress((p) => { track.progress = p; });
       MapCtl.onTrackFinished(() => {
@@ -540,6 +856,7 @@
         });
         chartDeg.setOption({
           title: { text: '节点度数分布', left: 'center', textStyle: { fontSize: 12, color: ink.text } },
+          tooltip: { trigger: 'item', formatter: '{b} 度：{c} 个节点' },
           grid: { left: 36, right: 12, top: 30, bottom: 22 },
           xAxis: { type: 'category', data: ['0', '1', '2', '3-4', '5+'], axisLabel: { fontSize: 10, color: ink.axis } },
           yAxis: { type: 'value', axisLabel: { fontSize: 10, color: ink.axis }, splitLine: { lineStyle: { color: ink.split } } },
@@ -554,6 +871,7 @@
         const typeName = { intersection: '路口', building: '建筑', parking: '停车场', temp: '临时节点', other: '其他' };
         chartTypes.setOption({
           title: { text: '节点类型', left: 'center', textStyle: { fontSize: 12, color: ink.text } },
+          tooltip: { trigger: 'item', formatter: '{b}：{c} 个（{d}%）' },
           series: [{
             type: 'pie', radius: ['34%', '60%'], center: ['50%', '58%'],
             label: { fontSize: 10, formatter: '{b} {c}', color: ink.text },
@@ -565,6 +883,7 @@
         graph.edges.forEach((e) => { const m = e.weight; wb[m < 50 ? 0 : m < 100 ? 1 : m < 200 ? 2 : m < 500 ? 3 : 4]++; });
         chartWeights.setOption({
           title: { text: '路段长度分布（米）', left: 'center', textStyle: { fontSize: 12, color: ink.text } },
+          tooltip: { trigger: 'item', formatter: '{b} 米：{c} 条路段' },
           grid: { left: 36, right: 12, top: 30, bottom: 22 },
           xAxis: { type: 'category', data: ['<50', '50-100', '100-200', '200-500', '500+'], axisLabel: { fontSize: 10, color: ink.axis } },
           yAxis: { type: 'value', axisLabel: { fontSize: 10, color: ink.axis }, splitLine: { lineStyle: { color: ink.split } } },
@@ -578,6 +897,7 @@
             .slice(0, 14);
           chart3d.setOption({
             grid3D: { boxWidth: 100, boxDepth: 40, viewControl: { distance: 130, alpha: 28, beta: 12 } },
+            tooltip: { formatter: (p) => { const d = (p && p.value) ? top[p.value[0]] : null; return d ? '节点 #' + d.n.id + '：连接度 ' + d.k : ''; } },
             xAxis3D: { type: 'category', data: top.map((x) => String(x.n.id)), axisLabel: { fontSize: 9 } },
             yAxis3D: { type: 'category', data: ['连接度'] },
             zAxis3D: { type: 'value' },
@@ -631,10 +951,20 @@
         if (heat.value) {
           MapCtl.removeHeat();
           heat.value = false;
+          writeSetting(SETTING_KEYS.heat, false);
           return;
         }
         heat.value = MapCtl.addHeat(heatPoints());
+        writeSetting(SETTING_KEYS.heat, heat.value);
         if (!heat.value) ElMessage.warning('热力图组件未加载');
+      }
+
+      // HTML 转义（P1-5）：桥层/CSV 来源的文本拼进 ElMessageBox 的
+      // dangerouslyUseHTMLString 消息前必须转义，防止名称含标记破坏布局/注入。
+      function esc(s) {
+        return String(s == null ? '' : s)
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
       }
 
       function fmtDist(m) {
@@ -650,6 +980,15 @@
       function segDir(s) {
         if (s.meters === 0 || s.deg < 0) return '重合点';
         return '向' + s.compass + '（≈' + s.deg + '°）约 ' + fmtMeters(s.meters);
+      }
+
+      // 推荐路线对比标签：第 1 条最优；与最优距离相同（浮点容差）标「并列」，其余附与最优的距离差
+      function routeTag(i) {
+        const r = qRoutes.value[i];
+        if (!r) return '';
+        if (i === 0) return '最优';
+        const d = r.dist - qRoutes.value[0].dist;
+        return Math.abs(d) < 1e-6 ? '并列' : '备选 +' + fmtMeters(Math.round(d));
       }
 
       function fitAll() {
@@ -741,6 +1080,10 @@
           if (r.fixed > 0 || r.gc > 0) {
             ElMessage.info('启动自检：修复位置引用 ' + r.fixed + ' 处，回收孤儿临时节点 ' + r.gc + ' 个');
           }
+          // 单车未完整载入（存在被跳过的异常行）时给出可见提示：此状态下启动自检会保守跳过孤儿回收
+          if (r.bikesLoadOk === false) {
+            ElMessage.warning('单车数据未完整载入（异常行已跳过），本次启动未回收孤儿临时节点；建议检查 bikes.csv');
+          }
           await pace(860);
           bootPhase.value = 3; // 准备就绪
           await pace(1500);
@@ -757,6 +1100,7 @@
           graphNodes.value = graph.nodes;
           MapCtl.renderGraph(graph, { fit: true });
           refreshAll();
+          applyShareHash(); // 分享链接恢复：仅预填表单（保守，不自动查询）
           bindAutoAnimate();
           window.__APP_READY__ = true;
         } catch (err) {
@@ -810,11 +1154,16 @@
       window.addEventListener('keydown', onKeydown);
 
       // 演示引导：driver.js 高亮关键区域，只指路不代点（不改变数据）
+      let tour = null; // 当前 driver.js 实例：重复点击先回收，避免引导层叠加（P1-4）
       function startTour() {
         const D = window.driver && ((window.driver.js && window.driver.js.driver) || window.driver.driver);
         if (!D) return ElMessage.warning('演示组件未加载');
+        if (tour) {
+          try { tour.destroy(); } catch (e) { /* 已销毁时忽略 */ }
+          tour = null;
+        }
         try {
-          new D({
+          tour = new D({
             showProgress: true,
             nextBtnText: '下一步',
             prevBtnText: '上一步',
@@ -822,11 +1171,16 @@
             steps: [
               { element: '#map', popover: { title: '校园地图', description: '离线矢量底图：节点/路段/单车；右上角可切换在线高德底图。', side: 'left', align: 'start' } },
               { element: '.tool-btn.wide', popover: { title: '在线底图', description: '点击切换在线/离线；连续失败自动回退。', side: 'bottom', align: 'end' } },
+              { element: 'button[aria-label="切换夜模式"]', popover: { title: '夜模式', description: '一键切换暗色配色（含地图瓦片滤镜），开关状态会自动记住。', side: 'bottom', align: 'end' } },
+              { element: 'button[aria-label="切换热力图"]', popover: { title: '连接热力图', description: '叠加显示节点连接热度（度数归一），开关状态同样会自动记住。', side: 'bottom', align: 'end' } },
+              { element: 'button[aria-label="自动演示"]', popover: { title: '自动演示', description: '一键跑通「查询 → 回放 → 借还车 → 保存」全流程（会修改数据，刷新即重置）。', side: 'bottom', align: 'end' } },
               { element: '#pane-query', popover: { title: '路径查询', description: '选起点/终点，点「最短路径」看红色路线与方向箭头，小车沿线回放。', side: 'left', align: 'start' } },
               { element: '#tab-bike', popover: { title: '共享单车', description: '借车/还车（地图点选）。', side: 'bottom', align: 'start' } },
-              { element: '#tab-data', popover: { title: '数据管理', description: '保存并下载 CSV / 导入数据。', side: 'bottom', align: 'start' } }
+              { element: '#tab-data', popover: { title: '数据管理', description: '保存并下载 CSV / 导入数据。', side: 'bottom', align: 'start' } },
+              { element: '#tab-insight', popover: { title: '数据洞察', description: '图结构统计：度数分布、节点类型、路段长度与 3D 连接度柱群（数据来自 WASM 桥层）。', side: 'bottom', align: 'start' } }
             ]
-          }).drive();
+          });
+          tour.drive();
         } catch (e) {
           ElMessage.error('演示启动失败：' + e.message);
         }
@@ -846,7 +1200,7 @@
       const DEMO_CHAPTERS = ['启程 · 校园路网', '求解 · 最短路径', '对比 · 最少跳数', '展示 · 多段导航', '业务 · 借车', '业务 · 还车', '收尾 · 数据持久化'];
       // GSAP 电影插件（3.13 全免费版；任一缺失时相关效果自动降级）
       try {
-        if (window.gsap && window.SplitText) gsap.registerPlugin(window.SplitText, window.CustomEase, window.MotionPathPlugin);
+        if (window.gsap && window.SplitText) gsap.registerPlugin(window.SplitText);
       } catch (e) { /* 插件注册失败不影响演示 */ }
       let lastSplit = null; // 最近一次标题逐字拆分实例（换页时回收，防止残留 span）
       // 电影画幅：2.35:1 letterbox——按当前地图尺寸算上下黑边高度（CSS clamp 兜底）
@@ -1043,8 +1397,9 @@
         } catch (e) {
           ElMessage.error('演示中断：' + ((e && e.message) || e));
         } finally {
-          exitCinema();
+          // 仅当本次演示仍存活时才收场：停止后立即重启时，旧链不得误收新演示的黑边
           if (alive()) {
+            exitCinema();
             demoCaption('', '');
             demoToken = null; // 仅当令牌仍属于本次演示时才归还，避免误杀后继演示
           }
@@ -1053,12 +1408,15 @@
 
       return {
         booted, bootError, bootPhase, bootPhases, activeTab, stats, statsView, graphNodes, nodeOptions,
-        q, qResult, qKind, qDistView, qHopsView, pickHint, online,
+        nodeOptionsView, nodeFilter, onNodeMenuToggle,
+        q, qResult, qKind, qDistView, qHopsView, pickHint, online, qRoutes, qRouteIdx,
         bikes, temps, bikesDirty, tempsDirty, saving, bikesInput, tempsInput,
-        dark, soundOn, track, toggleDark, toggleSound, trackToggle, trackReplay, trackSetSpeed,
-        pickFor, doShortest, doMinHops, doMulti, clearQuery, fitAll, toggleOnline,
+        dark, soundOn, track, toggleDark, toggleSound, trackToggle, trackReplay, trackSetSpeed, trackSeekOnInput,
+        pickFor, doShortest, doMinHops, doMulti, doTopPaths, pickRoute, clearQuery, fitAll, toggleOnline,
+        shareQuery, stopName, traceToggle, traceRunning, traceCaption, stopsListEl,
         statusText, statusTagType, bikeLocation, borrow, startReturn, removeTemp, repairGhosts,
-        doSave, onBikesFile, onTempsFile, fmtDist, segDir, startTour, startDemo,
+        promptReturn, promptAddTemp,
+        doSave, onBikesFile, onTempsFile, fmtDist, segDir, routeTag, startTour, startDemo,
         heat, toggleHeat,
       };
     }

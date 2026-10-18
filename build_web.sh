@@ -33,6 +33,7 @@ em++ -O2 --bind -fwasm-exceptions \
     "$ROOT/web/bridge.cpp" \
     "$ROOT/src/algorithm.cpp" "$ROOT/src/bike.cpp" \
     "$ROOT/src/csv_io.cpp" "$ROOT/src/graph.cpp" \
+    "$ROOT/src/startup.cpp" \
     -o "$DIST/campus_core.js"
 
 python3 "$ROOT/tools/gen_data_js.py"

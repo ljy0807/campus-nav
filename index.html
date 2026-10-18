@@ -47,8 +47,9 @@
           <span><i class="dot dot-bike"></i>单车</span>
           <span><i class="dash"></i>路径</span>
         </div>
-        <div class="pick-hint" v-if="pickHint">{{ pickHint }}</div>
+        <div class="pick-hint" v-if="pickHint" aria-live="polite">{{ pickHint }}</div>
         <div id="demo-caption" aria-live="polite"></div>
+        <div id="trace-caption" class="trace-caption" v-if="traceCaption" aria-live="polite">{{ traceCaption }}</div>
   <div id="cine-endcard" aria-hidden="true">
     <div class="ce-title">校园导航与共享单车系统</div>
     <div class="ce-sub">Dijkstra · BFS · Floyd-Warshall · C++17 → WebAssembly</div>
@@ -70,14 +71,14 @@
           <el-tab-pane label="路径查询" name="query">
             <div class="pane-body">
               <div class="field-row">
-                <el-select v-model="q.from" filterable clearable placeholder="起点（可输入搜索）" class="grow">
-                  <el-option v-for="n in nodeOptions" :key="'f' + n.id" :value="n.id" :label="n.label"></el-option>
+                <el-select v-model="q.from" filterable clearable placeholder="起点（可输入搜索）" class="grow" :filter-method="nodeFilter" @visible-change="onNodeMenuToggle">
+                  <el-option v-for="n in nodeOptionsView" :key="'f' + n.id" :value="n.id" :label="n.label"></el-option>
                 </el-select>
                 <el-button @click="pickFor('from')">地图选点</el-button>
               </div>
               <div class="field-row">
-                <el-select v-model="q.to" filterable clearable placeholder="终点（可输入搜索）" class="grow">
-                  <el-option v-for="n in nodeOptions" :key="'t' + n.id" :value="n.id" :label="n.label"></el-option>
+                <el-select v-model="q.to" filterable clearable placeholder="终点（可输入搜索）" class="grow" :filter-method="nodeFilter" @visible-change="onNodeMenuToggle">
+                  <el-option v-for="n in nodeOptionsView" :key="'t' + n.id" :value="n.id" :label="n.label"></el-option>
                 </el-select>
                 <el-button @click="pickFor('to')">地图选点</el-button>
               </div>
@@ -87,21 +88,42 @@
               </div>
 
               <el-divider content-position="left">多段导航</el-divider>
-              <el-select v-model="q.stops" multiple filterable clearable :multiple-limit="100" placeholder="依次选择 2 个以上节点" class="w-full">
-                <el-option v-for="n in nodeOptions" :key="'s' + n.id" :value="n.id" :label="n.label"></el-option>
+              <el-select v-model="q.stops" multiple filterable clearable :multiple-limit="100" placeholder="依次选择 2 个以上节点" class="w-full" :filter-method="nodeFilter" @visible-change="onNodeMenuToggle">
+                <el-option v-for="n in nodeOptionsView" :key="'s' + n.id" :value="n.id" :label="n.label"></el-option>
               </el-select>
+              <div class="stops-order" v-if="q.stops.length >= 2" ref="stopsListEl" aria-label="途经顺序（可拖拽排序）">
+                <div class="stop-row" v-for="(id, i) in q.stops" :key="id" :data-id="id">
+                  <span class="seg-idx">{{ i + 1 }}</span>
+                  <span class="seg-names">{{ stopName(id) }}</span>
+                  <span class="stop-grip" aria-hidden="true">⋮⋮</span>
+                </div>
+              </div>
               <el-button class="w-full" @click="doMulti">开始多段导航</el-button>
+              <el-button class="w-full" style="margin-top: 8px;" @click="doTopPaths">三条推荐路线（Yen K 短路）</el-button>
+              <el-button class="w-full" style="margin-top: 8px;" @click="shareQuery">分享当前查询（生成链接）</el-button>
 
               <div class="result-card" v-if="qResult">
                 <div class="result-head">
                   <span v-if="qKind === 'minhops'">最少 <b>{{ qHopsView }}</b> 跳</span>
                   <span v-else>总距离 <b>{{ fmtDist(qDistView) }}</b> · {{ (qResult.path || []).length }} 个节点</span>
-                  <el-button link type="primary" @click="clearQuery">清除</el-button>
+                  <span class="result-actions">
+                    <el-button v-if="qKind === 'shortest'" link type="primary" @click="traceToggle">{{ traceRunning ? '停止逐步演示' : '逐步演示' }}</el-button>
+                    <el-button link type="primary" @click="clearQuery">清除</el-button>
+                  </span>
+                </div>
+                <div class="seg-list" v-if="qKind === 'top3' && qRoutes.length > 1">
+                  <div class="seg-row route-row" v-for="(r, i) in qRoutes" :key="'route' + i"
+                       :class="{ 'route-active': i === qRouteIdx }" @click="pickRoute(i)">
+                    <span class="seg-idx">{{ i + 1 }}</span>
+                    <span class="seg-names">总距离 {{ fmtDist(r.dist) }} · {{ (r.path || []).length }} 个节点</span>
+                    <span class="seg-dir">{{ routeTag(i) }}</span>
+                  </div>
                 </div>
                 <div class="track-bar">
                   <el-button size="small" :type="track.playing ? 'warning' : 'primary'" plain @click="trackToggle">{{ track.playing ? '暂停' : '回放' }}</el-button>
                   <el-button size="small" plain @click="trackReplay">重播</el-button>
-                  <span class="track-progress">回放进度 {{ Math.round(track.progress * 100) }}%</span>
+                  <input class="track-range" type="range" min="0" max="1000" step="1" :value="Math.round(track.progress * 1000)" @input="trackSeekOnInput" aria-label="回放进度（可拖动定位）" title="回放进度：可拖动定位" />
+                  <span class="track-progress">{{ Math.round(track.progress * 100) }}%</span>
                   <el-select v-model="track.speed" class="track-speed" size="small" @change="trackSetSpeed">
                     <el-option :value="100" label="慢速" />
                     <el-option :value="400" label="正常" />
@@ -136,6 +158,7 @@
                   <div class="bc-actions">
                     <el-button v-if="b.status === 'available' && b.nodeId !== 0" size="small" type="primary" @click="borrow(b)">借车</el-button>
                     <el-button v-if="b.status === 'borrowed'" size="small" type="warning" @click="startReturn(b)">还车</el-button>
+                    <el-button v-if="b.status === 'borrowed'" size="small" plain aria-label="手动输入坐标归还单车" @click="promptReturn(b)">输入坐标</el-button>
                   </div>
                 </div>
                 <div v-if="!bikes.length" class="empty">暂无单车数据</div>
@@ -173,6 +196,7 @@
                 <div v-if="!temps.length" class="empty">暂无临时节点</div>
               </div>
               <el-button class="w-full" plain @click="pickFor('temp')">点选位置添加临时节点</el-button>
+              <el-button class="w-full" plain style="margin-top: 8px;" aria-label="手动输入坐标添加临时节点" @click="promptAddTemp()">输入坐标添加</el-button>
               <el-button class="w-full" plain style="margin-top: 8px;" @click="repairGhosts">修复位置缺失单车（自动恢复）</el-button>
             </div>
           </el-tab-pane>
@@ -206,13 +230,14 @@
   <script src="vendor/driver.js.iife.js"></script>
   <script src="vendor/gsap.min.js"></script>
   <script src="vendor/SplitText.min.js"></script>
-  <script src="vendor/CustomEase.min.js"></script>
-  <script src="vendor/MotionPathPlugin.min.js"></script>
   <script src="vendor/echarts.min.js"></script>
   <script src="vendor/echarts-gl.min.js"></script>
   <script src="vendor/leaflet-heat.js"></script>
   <script src="vendor/auto-animate.iife.js"></script>
   <script src="vendor/tsparticles.slim.bundle.min.js"></script>
+  <script src="vendor/pinyin-pro.min.js"></script>
+  <script src="vendor/lz-string.min.js"></script>
+  <script src="vendor/Sortable.min.js"></script>
   <script src="js/api.js"></script>
   <script src="js/map.js"></script>
   <script src="js/app.js"></script>

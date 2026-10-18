@@ -4,6 +4,6 @@
 
 - 站点入口：`index.html`（本仓库根目录即站点根）
 - 引擎：`dist/campus_core.js`（WASM 内嵌单文件）
-- 数据：`dist/data_campus.js`（114 节点 / 162 路段 / 5 辆单车）
+- 数据：`dist/data_campus.js`（115 节点 / 163 路段 / 5 辆单车）
 
 整目录即静态站点，可直接由 GitHub Pages 托管。

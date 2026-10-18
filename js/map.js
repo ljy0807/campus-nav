@@ -47,7 +47,8 @@ window.MapCtl = (function () {
     });
   }
 
-  // 渲染单车：nodeId>0 用图上节点坐标；nodeId<0 用自带经纬度；无位置（已借出）不画
+  // 渲染单车：nodeId>0 用图上节点坐标；nodeId<0 优先查节点索引（临时节点），否则用自带经纬度
+  // 自带经纬度仅在有限且非 (0,0) 哨兵时生效；无位置（已借出）不画
   function renderBikes(bikes) {
     layers.bikes.clearLayers();
     if (!bikes) return;
@@ -56,8 +57,10 @@ window.MapCtl = (function () {
       if (b.nodeId > 0) {
         const n = nodeIndex.get(b.nodeId);
         if (n) latlng = [n.lat, n.lon];
-      } else if (b.nodeId < 0 && isFinite(b.lat) && isFinite(b.lon)) {
-        latlng = [b.lat, b.lon];
+      } else if (b.nodeId < 0) {
+        const n = nodeIndex.get(b.nodeId);
+        if (n) latlng = [n.lat, n.lon];
+        else if (isFinite(b.lat) && isFinite(b.lon) && !(b.lat === 0 && b.lon === 0)) latlng = [b.lat, b.lon];
       }
       if (!latlng) continue;
       L.marker(latlng, { icon: bikeIcon(), keyboard: false })
@@ -85,6 +88,7 @@ window.MapCtl = (function () {
     layers.path = L.layerGroup().addTo(map);
     layers.misc = L.layerGroup().addTo(map);
     layers.bikes = L.layerGroup().addTo(map);
+    layers.trace = L.layerGroup().addTo(map); // 逐步演示高亮（独立图层，随路径清理）
     map.setView([28.6778, 115.9237], 17);
   }
 
@@ -293,7 +297,26 @@ window.MapCtl = (function () {
       pathRed = null;
     }
     layers.path.clearLayers();
+    traceClear(); // 逐步演示高亮随路径清理
     if (trackHaltCb) trackHaltCb(); // 通知 UI：回放已被清理（状态复位）
+  }
+
+  // 备选路线（纯展示）：在主路径之外叠画灰色虚线；随 clearPath（layers.path）一起清除
+  function drawVariants(pathLists) {
+    if (!pathLists || !pathLists.length) return;
+    for (const ids of pathLists) {
+      if (!ids || ids.length < 2) continue;
+      const pts = [];
+      let ok = true;
+      for (const id of ids) {
+        const n = nodeIndex.get(id);
+        if (!n) { ok = false; break; }
+        pts.push([n.lat, n.lon]);
+      }
+      if (!ok) continue; // 任一节点缺失则不画残线（与 drawPath 同口径）
+      L.polyline(pts, { color: '#7a8a99', weight: 3, opacity: 0.55, dashArray: '6 8', interactive: false })
+        .addTo(layers.path);
+    }
   }
 
   function showPick(latlng, label) {
@@ -303,6 +326,23 @@ window.MapCtl = (function () {
       className: 'pulse-pick'
     }).addTo(layers.misc);
     if (label) m.bindTooltip(tipEl(label), { direction: 'top' }).openTooltip();
+  }
+
+  // 逐步演示高亮（Dijkstra 确定顺序；纯展示，独立图层，随 clearPath/traceClear 清除）
+  function traceHighlight(id) {
+    const n = nodeIndex.get(id);
+    if (!n) return false;
+    traceClear();
+    L.circleMarker([n.lat, n.lon], {
+      radius: 9, color: '#ffd166', weight: 3, fillColor: '#ffb703', fillOpacity: .55,
+      className: 'pulse-trace', interactive: false
+    }).bindTooltip(tipEl(n.name), { direction: 'top', offset: [0, -8], opacity: .95 }).openTooltip()
+      .addTo(layers.trace);
+    return true;
+  }
+
+  function traceClear() {
+    if (layers.trace) layers.trace.clearLayers();
   }
 
   // 节点连接热力图（leaflet.heat）：数据由 app.js 从桥层图数据计算，此处只渲染
@@ -356,6 +396,18 @@ window.MapCtl = (function () {
   function trackSetSpeed(speed) {
     if (!trackPlayer) return;
     trackPlayer.setSpeed(speed);
+  }
+
+  // 进度条拖动定位（vendor setProgress 语义）：暂停态只重绘；播放态下一帧从新位置继续；
+  // 结束态 seek 后按暂停处理（视频播放器语义：拖到某点停住，待用户再点回放续播）。
+  // 返回定位后的播放状态；null 表示当前没有回放实例。
+  function trackSeek(progress) {
+    if (!trackPlayer) return null;
+    const p = Math.max(0, Math.min(1, Number(progress) || 0));
+    const wasFinished = !!trackPlayer.finished;
+    trackPlayer.setProgress(p);
+    if (wasFinished) trackPlayer.pause(); // vendor 结束态 setProgress 会自动续播，这里收回为暂停
+    return !trackPlayer.isPaused && !trackPlayer.finished;
   }
 
   function onTrackProgress(cb) { trackProgressCb = cb; }
@@ -427,6 +479,7 @@ window.MapCtl = (function () {
     nodeById: nodeById,
     renderGraph: renderGraph,
     drawPath: drawPath,
+    drawVariants: drawVariants,
     renderBikes: renderBikes,
     clearPath: clearPath,
     showPick: showPick,
@@ -440,10 +493,13 @@ window.MapCtl = (function () {
     setMiniMapBase: setMiniMapBase,
     addHeat: addHeat,
     removeHeat: removeHeat,
+    traceHighlight: traceHighlight,
+    traceClear: traceClear,
     showRadius: showRadius,
     trackToggle: trackToggle,
     trackReplay: trackReplay,
     trackSetSpeed: trackSetSpeed,
+    trackSeek: trackSeek,
     onTrackProgress: onTrackProgress,
     onTrackFinished: onTrackFinished,
     onTrackHalt: onTrackHalt,

@@ -21,27 +21,43 @@ window.Api = (function () {
     }
   }
 
+  // 统一调用兜底（P1-3）：mod 未初始化、WASM 侧抛异常等一律转为
+  // { ok:false, error } 形状（与 J 的失败形状一致），调用方按 r.ok 分支即可；
+  // 修复前是 J(mod.x(...))——mod.x(...) 先于 J 求值，异常会直接炸穿调用点。
+  function call(name, ...args) {
+    try {
+      if (!mod) throw new Error('引擎尚未初始化');
+      return J(mod[name](...args));
+    } catch (e) {
+      return { ok: false, error: '桥层调用异常（' + name + '）：' + (e && e.message ? e.message : String(e)) };
+    }
+  }
+
   return {
     init: init,
-    load: (nodes, edges, bikes, temps) => J(mod.load(nodes, edges, bikes, temps)),
-    getGraph: () => J(mod.getGraph()),
-    getBikes: () => J(mod.getBikes()),
-    getTemps: () => J(mod.getTemps()),
-    status: () => J(mod.status()),
-    nearestNode: (lat, lon) => J(mod.nearestNode(lat, lon)),
-    shortestPath: (from, to) => J(mod.shortestPath(from, to)),
-    multiStep: (idsCsv) => J(mod.multiStep(idsCsv)),
-    minHops: (from, to) => J(mod.minHops(from, to)),
-    nearestParking: (lat, lon) => J(mod.nearestParking(lat, lon)),
-    returnPreview: (lat, lon) => J(mod.returnPreview(lat, lon)),
-    borrow: (bikeId) => J(mod.borrow(bikeId)),
-    returnBike: (bikeId, lat, lon) => J(mod.returnBike(bikeId, lat, lon)),
-    addTemp: (lat, lon, linkedParking) => J(mod.addTemp(lat, lon, linkedParking)),
-    removeTemp: (nodeId) => J(mod.removeTemp(nodeId)),
-    importBikes: (csv) => J(mod.importBikes(csv)),
-    importTemps: (csv) => J(mod.importTemps(csv)),
-    save: () => J(mod.save()),
-    markSaved: () => J(mod.markSaved()),
-    repairGhosts: () => J(mod.repairGhosts())
+    load: (nodes, edges, bikes, temps) => call('load', nodes, edges, bikes, temps),
+    getGraph: () => call('getGraph'),
+    getBikes: () => call('getBikes'),
+    getTemps: () => call('getTemps'),
+    status: () => call('status'),
+    nearestNode: (lat, lon) => call('nearestNode', lat, lon),
+    shortestPath: (from, to) => call('shortestPath', from, to),
+    topPaths: (from, to, k) => call('topPaths', from, to, k),
+    multiStep: (idsCsv) => call('multiStep', idsCsv),
+    minHops: (from, to) => call('minHops', from, to),
+    dijkstraTrace: (from, to) => call('dijkstraTrace', from, to),
+    nearestParking: (lat, lon) => call('nearestParking', lat, lon),
+    returnPreview: (lat, lon) => call('returnPreview', lat, lon),
+    borrow: (bikeId) => call('borrow', bikeId),
+    returnBike: (bikeId, lat, lon) => call('returnBike', bikeId, lat, lon),
+    addTemp: (lat, lon, linkedParking) => call('addTemp', lat, lon, linkedParking),
+    removeTemp: (nodeId) => call('removeTemp', nodeId),
+    importBikes: (csv) => call('importBikes', csv),
+    importTemps: (csv) => call('importTemps', csv),
+    precheckBikes: (csv) => call('precheckBikes', csv),
+    precheckTemps: (csv) => call('precheckTemps', csv),
+    save: () => call('save'),
+    markSaved: () => call('markSaved'),
+    repairGhosts: () => call('repairGhosts')
   };
 })();

@@ -31,11 +31,15 @@ body {
   background: #eef3ef;
 }
 [v-cloak] { display: none; }
-#app { height: 100vh; }
+#app {
+  height: 100vh;
+  height: 100dvh; /* 移动端动态视口；不支持 dvh 的浏览器保留上一行 100vh */
+}
 
 /* ---------- 启动页 ---------- */
 .boot {
-  height: 100vh; display: flex; align-items: center; justify-content: center;
+  height: 100vh;
+  height: 100dvh; display: flex; align-items: center; justify-content: center;
   background: linear-gradient(160deg, #eef6f0 0%, #e3efe8 100%);
   position: relative; overflow: hidden;
 }
@@ -59,7 +63,11 @@ body {
 .boot-dots i.on { background: #1f9d6b; }
 
 /* ---------- 总布局 ---------- */
-.layout { display: flex; height: 100vh; overflow: hidden; animation: layoutIn .5s ease both; }
+.layout {
+  display: flex; overflow: hidden; animation: layoutIn .5s ease both;
+  height: 100vh;
+  height: 100dvh; /* 移动端动态视口；不支持 dvh 的浏览器保留上一行 100vh */
+}
 @keyframes layoutIn { from { opacity: 0; } to { opacity: 1; } }
 .map-side { position: relative; flex: 1; min-width: 0; }
 #map { position: absolute; inset: 0; background: #eef3ef; }
@@ -187,6 +195,8 @@ body {
   display: inline-flex; align-items: center; justify-content: center; font-size: 11px;
 }
 .seg-names { color: #2c3e35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.route-row { cursor: pointer; }
+.route-row:hover .seg-names, .route-active .seg-names { color: #e5484d; }
 .seg-dir { color: #6b7f74; white-space: nowrap; }
 .hop-names { margin-top: 8px; font-size: 12px; color: #45564c; line-height: 1.7; }
 
@@ -197,7 +207,21 @@ body {
 }
 .track-bar .el-button { margin-left: 0; }
 .track-progress { flex: 1; font-size: 11px; color: #6b7f74; text-align: center; }
-.track-speed { width: 86px; }
+.track-speed { width: 78px; }
+.track-range { flex: none; width: 72px; margin: 0; accent-color: #1f9d6b; cursor: pointer; }
+
+/* 途经顺序（SortableJS 拖拽排序；独立于 el-select 多选，仅调整顺序） */
+.stops-order { margin: 8px 0; display: flex; flex-direction: column; gap: 4px; }
+.stop-row {
+  display: flex; align-items: center; gap: 6px; padding: 4px 8px;
+  border: 1px dashed #cfe6d8; border-radius: 8px; background: #f7fbf9;
+  font-size: 12px; cursor: grab;
+}
+.stop-row .seg-names { flex: 1; }
+.stop-grip { color: #9aab9f; letter-spacing: -2px; }
+.stop-ghost { opacity: .5; border-color: #2fa06b; border-style: solid; }
+body.dark .stop-row { background: #1b2921; border-color: #2c4036; }
+body.dark .stop-ghost { border-color: #2fa06b; }
 
 /* ---------- 单车 ---------- */
 .bike-list { display: flex; flex-direction: column; gap: 8px; }
@@ -408,7 +432,7 @@ body.dark .chart-box { background: #1b2921; border-color: #2c4036; }
   .map-side::before, .map-side::after,
   .map-title, .legend, #map, #demo-caption,
   #map::before, #map::after, #cine-endcard { transition: none; }
-  .pulse-start, .pulse-end, .pulse-pick, .flow-line.flow-ready, .boot-spinner { animation: none !important; }
+  .pulse-start, .pulse-end, .pulse-pick, .pulse-trace, .flow-line.flow-ready, .boot-spinner { animation: none !important; }
 }
 
 /* 小地图（leaflet-minimap，纯展示；影院期显示，随主图底图同步）
@@ -442,3 +466,16 @@ body.dark .leaflet-control-minimap { border-color: rgba(20, 30, 25, .9) !importa
   position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px 0 0 -3px;
   background: #e5484d; border-radius: 50%; box-shadow: 0 0 8px rgba(229, 72, 77, .9);
 }
+
+/* 逐步演示（Dijkstra 确定顺序）：当前节点脉冲 + 底部字幕（纯展示层） */
+.leaflet-interactive.pulse-trace { animation: markerPulse 1.2s ease-out infinite; }
+.trace-caption {
+  position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%);
+  max-width: 76%; padding: 8px 16px; border-radius: 12px;
+  background: rgba(16, 30, 23, .88); color: #eaf6ee;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .28); z-index: 1150; text-align: center;
+  font-size: 12px; letter-spacing: .5px; pointer-events: none;
+}
+body.dark .trace-caption { background: rgba(8, 16, 12, .92); }
+.result-actions { display: inline-flex; align-items: center; }
+.result-actions .el-button + .el-button { margin-left: 8px; }

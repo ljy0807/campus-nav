@@ -6,15 +6,19 @@
 #include "algorithm.h"
 #include "bike.h"
 #include "csv_io.h"
+#include "startup.h"
 
 #include <emscripten/bind.h>
 
 #include <algorithm>
 #include <cstdio>
+#include <functional>
 #include <iomanip>
 #include <iostream>
+#include <queue>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 // ---------- 与 main.cpp 相同的全局状态（web 目标的唯一定义处） ----------
@@ -25,6 +29,12 @@ std::vector<std::vector<double>> dist;
 std::vector<std::vector<int>> nxt;
 bool bikesDirty = false;
 bool tempsDirty = false;
+bool tempsLoadFailed = false;
+
+// 当前 bikes 是否处于“完整载入”状态（>0 行且无跳过/归一化）。
+// importTemps 的 GC 门控必须用这个，而不是 !bikes.empty()：
+// 部分载入（有 skipped）时被跳过行引用的临时节点会被 GC 误删。
+static bool gBikesLoadOk = false;
 
 namespace {
 
@@ -199,33 +209,22 @@ std::string web_load(const std::string& nodesCsv, const std::string& edgesCsv,
         rollback();
         return errJson("写入内存文件系统失败");
     }
-    const int nn = loadNodes("nodes.csv", g);  // 结尾自动 buildAdj（csv_io.cpp）
-    if (nn <= 0) {
+    // 复用控制台同一条启动管线（startup.cpp），不再在桥层复制加载顺序：
+    // 之后任何加载/修复顺序调整只改 runStartup 一处。
+    StartupStats stats;
+    if (!runStartup(".", &stats)) {
         rollback();
-        return errJson("节点文件为空或无法解析");
+        return errJson("节点或边文件为空或无法解析");
     }
-    const int ne = loadEdges("edges.csv", g);  // 入口守卫自动 buildAdj（csv_io.cpp）
-    if (ne <= 0) {
-        rollback();
-        return errJson("边文件为空或无法解析");
-    }
-    // 零有效行（文件为空/全部无效）或存在被跳过/归一化的行时跳过孤儿回收，
-    // 避免清空仅被这些数据引用的临时节点（与 main.cpp 的 P1 修复保持一致）。
-    int skippedBikes = 0;
-    const int bikesLoaded = loadBikes("bikes.csv", bikes, &g, &skippedBikes);
-    const bool bikesLoadOk = (bikesLoaded > 0 && skippedBikes == 0);
-    if (loadTemps("temps.csv", tempNodes, g) < 0) tempNodes.clear();
-    const int fixed = fixDanglingBikeRefs(bikes, tempNodes, g);
-    if (fixed > 0) bikesDirty = true;
-    // 图修改函数（addTempNode/removeTempNode）均自行维护 adj/idToIdx，无需再 buildAdj
-    const int gc = bikesLoadOk ? gcOrphanTempNodes(g, bikes, tempNodes) : 0;
+    gBikesLoadOk = stats.bikesLoadOk;
 
     std::ostringstream os;
-    os << "{\"ok\":true,\"nodes\":" << nn
-       << ",\"edges\":" << ne
-       << ",\"bikes\":" << bikes.size()
-       << ",\"temps\":" << tempNodes.size()
-       << ",\"fixed\":" << fixed << ",\"gc\":" << gc
+    os << "{\"ok\":true,\"nodes\":" << stats.nodes
+       << ",\"edges\":" << stats.edges
+       << ",\"bikes\":" << stats.bikes
+       << ",\"temps\":" << stats.temps
+       << ",\"fixed\":" << stats.fixed << ",\"gc\":" << stats.gc
+       << ",\"bikesLoadOk\":" << (stats.bikesLoadOk ? "true" : "false")
        << ",\"graphNodes\":" << g.nodes.size() << "}";
     return os.str();
 }
@@ -295,6 +294,7 @@ std::string web_status() {
     std::ostringstream os;
     os << "{\"bikesDirty\":" << (bikesDirty ? "true" : "false")
        << ",\"tempsDirty\":" << (tempsDirty ? "true" : "false")
+       << ",\"bikesLoadOk\":" << (gBikesLoadOk ? "true" : "false")
        << ",\"bikes\":" << bikes.size()
        << ",\"temps\":" << tempNodes.size()
        << ",\"nodes\":" << g.nodes.size() << "}";
@@ -385,10 +385,41 @@ std::string web_multiStep(const std::string& idsCsv) {
     return pathResult(true, "", total, full);
 }
 
+// 三条推荐路线（Yen K 短路）：业务逻辑在 src/algorithm.cpp 的 kShortestPaths，
+// 本函数只做参数校验与 JSON 组装（与 pathResult 同口径：hops 为路径节点数）。
+std::string web_topPaths(int from, int to, int k) {
+    if (k < 1 || k > 10) return errJson("k 需在 1 ~ 10 之间");
+    if (findNodeById(g, from) < 0) return errJson("起点不存在");
+    if (findNodeById(g, to) < 0) return errJson("终点不存在");
+    std::vector<std::vector<int>> paths;
+    std::vector<double> dists;
+    const int n = kShortestPaths(g, from, to, k, paths, dists);
+    if (n <= 0) return errJson("两点之间不可达");
+    std::ostringstream os;
+    os << std::setprecision(10);
+    os << "{\"ok\":true,\"count\":" << n << ",\"routes\":[";
+    for (int i = 0; i < n; ++i) {
+        if (i) os << ",";
+        os << "{\"dist\":" << dists[i]
+           << ",\"hops\":" << static_cast<int>(paths[i].size()) << ",";
+        appendPathIds(os, paths[i]);
+        os << ",";
+        appendNames(os, paths[i]);
+        os << ",";
+        appendSegments(os, paths[i]);
+        os << "}";
+    }
+    os << "]}";
+    return os.str();
+}
+
 std::string web_minHops(int from, int to) {
+    // 与 shortestPath 同口径：节点存在性单独归类，桥层不把两类失败合并成一条含混文案
+    if (findNodeById(g, from) < 0 || findNodeById(g, to) < 0)
+        return errJson("节点不存在");
     std::vector<int> path;
     int hops = bfsMinHops(g, from, to, &path);
-    if (hops < 0) return errJson("不可达或节点不存在");
+    if (hops < 0) return errJson("两点之间不可达");
     std::ostringstream os;
     os << std::setprecision(10);
     os << "{\"ok\":true,\"hops\":" << hops << ",";
@@ -396,6 +427,49 @@ std::string web_minHops(int from, int to) {
     os << ",";
     appendNames(os, path);
     os << "}";
+    return os.str();
+}
+
+// 最短路径逐步演示：只读导出，镜像 algorithm.cpp dijkstra 的确定顺序
+// （小顶堆弹出即确定；终点确定即提前结束），返回按确定顺序的节点序列与距离快照。
+// 不修改任何既有函数语义，仅只读遍历图数据；路径本身仍以 shortestPath 的结果为准。
+std::string web_dijkstraTrace(int from, int to) {
+    const int si = findNodeById(g, from);
+    const int ei = findNodeById(g, to);
+    if (si < 0 || ei < 0) return errJson("节点不存在");
+    const double INF = 1e30;  // 与 algorithm.cpp 的 dijkstra 同值（不可达阈值 INF/2 同源）
+    const int n = (int)g.nodes.size();
+    std::vector<double> d(n, INF);
+    using P = std::pair<double, int>;
+    std::priority_queue<P, std::vector<P>, std::greater<P>> pq;
+    d[si] = 0.0;
+    pq.push({0.0, si});
+    std::ostringstream os;
+    os << std::setprecision(10);
+    os << "{\"ok\":true,\"order\":[";
+    int count = 0;
+    bool reached = false;
+    while (!pq.empty()) {
+        auto [du, u] = pq.top();
+        pq.pop();
+        if (du > d[u]) continue;  // 过期条目：与 dijkstra 同口径
+        if (count) os << ",";
+        os << "{\"id\":" << g.nodes[u].id
+           << ",\"name\":" << jsonStr(displayName(g.nodes[u]))
+           << ",\"dist\":" << du << "}";
+        ++count;
+        if (u == ei) { reached = true; break; }  // 终点已确定最短距离，提前结束
+        if (u >= (int)g.adj.size()) continue;    // 防御：adj 行缺失视为无出边（与 dijkstra 的截断对齐）
+        for (const Edge& e : g.adj[u]) {
+            const int v = findNodeById(g, e.to);
+            if (v < 0) continue;
+            if (d[u] + e.weight < d[v]) {
+                d[v] = d[u] + e.weight;
+                pq.push({d[v], v});
+            }
+        }
+    }
+    os << "],\"count\":" << count << ",\"dist\":" << (reached ? d[ei] : -1.0) << "}";
     return os.str();
 }
 
@@ -498,6 +572,15 @@ std::string web_returnPreview(double lat, double lon) {
 std::string web_addTemp(double lat, double lon, int linkedParking) {
     if (!validLatLon(lat, lon)) return errJson("参数非法：坐标无效");
     if (lat == 0.0 || lon == 0.0) return errJson("参数非法：(0,0) 或含 0 表示无位置");  // 与 addTempNode 同口径
+    // 覆盖半径内不建临时节点：与控制台 interactiveAddTemp 同口径
+    // （findCoveringParking 无覆盖返回 -1；该规则必须在桥层也复用，不能只在菜单层）
+    const int covering = findCoveringParking(g, lat, lon);
+    if (covering > 0) {
+        const int ci = findNodeById(g, covering);
+        return errJson("坐标在停车场 " +
+                       (ci >= 0 ? displayName(g.nodes[ci]) : std::to_string(covering)) +
+                       " 的覆盖半径内，还车会直接归位，无需添加临时节点");
+    }
     // 同坐标复用：与控制台菜单「添加临时节点」口径一致，避免同一位置重出多份台账
     const int existing = findTempNodeAt(tempNodes, lat, lon);
     if (existing != 0) {
@@ -510,16 +593,9 @@ std::string web_addTemp(double lat, double lon, int linkedParking) {
             << "}";
         return eos.str();
     }
-    int t = addTempNode(g, lat, lon, linkedParking, 0);
+    // 图节点 + 台账由核心唯一入口一起写，桥层不再自己 push 台账
+    const int t = addTempNodeRecorded(g, tempNodes, lat, lon, linkedParking, 0);
     if (t == 0) return errJson("添加失败：停车场不存在或参数非法");
-    // 登记临时节点台账（与 menu.cpp 手动添加、returnBike 新建路径一致）。
-    // 缺登记会导致：保存不落盘、列表不显示、无法删除、孤儿回收失效
-    TempNode rec;
-    rec.nodeId = t;
-    rec.lat = lat;
-    rec.lon = lon;
-    rec.linkedParking = linkedParking;
-    tempNodes.push_back(rec);
     std::ostringstream os;
     os << std::setprecision(10);
     os << "{\"ok\":true,\"tempId\":" << t
@@ -537,8 +613,7 @@ std::string web_removeTemp(int nodeId) {
     if (chk == 3)
         return errJson("该临时节点上还有 " + std::to_string(cnt) +
                        " 辆车，删除被拒绝（请先借走可借车辆）");
-    removeTempNode(g, nodeId);
-    eraseTempNodeRecord(tempNodes, nodeId);
+    removeTempNodeRecorded(g, tempNodes, nodeId);
     return "{\"ok\":true,\"msg\":" +
            jsonStr("已删除临时节点 " + formatTempId(nodeId)) + "}";
 }
@@ -554,9 +629,12 @@ std::string web_importBikes(const std::string& csv) {
     if (n <= 0) { bikesDirty = wasDirty; return errJson("单车文件为空或没有有效数据行，已取消导入"); }
     bikes = std::move(nb);
     bikesDirty = true; // 导入的数据与磁盘初始数据不同，必须标记为未保存
+    gBikesLoadOk = (n > 0 && skipped == 0);  // 供 importTemps 的 GC 门控使用
     const int fixed = fixDanglingBikeRefs(bikes, tempNodes, g);
     if (fixed > 0) bikesDirty = true;
-    gcOrphanTempNodes(g, bikes, tempNodes);
+    // 与 startup.cpp:33 / web_load 同源门控：存在被跳过行时不做孤儿回收——
+    // 被跳过行引用的临时节点在内存中已无引用，GC 会把图节点与台账一并永久删除
+    if (gBikesLoadOk) gcOrphanTempNodes(g, bikes, tempNodes);
     std::ostringstream os;
     os << "{\"ok\":true,\"count\":" << bikes.size() << ",\"fixed\":" << fixed << ",\"skipped\":" << skipped << "}";
     return os.str();
@@ -568,15 +646,11 @@ static bool restoreTempNodes(Graph& g, std::vector<TempNode>& tempNodes,
                              const std::vector<TempNode>& backup) {
     bool ok = true;
     for (const TempNode& t : backup) {
-        const int id = addTempNode(g, t.lat, t.lon, t.linkedParking, t.nodeId);
+        const int id = addTempNodeRecorded(g, tempNodes, t.lat, t.lon, t.linkedParking, t.nodeId);
         if (id == 0) {
             std::cerr << "警告: 回滚临时节点失败: " << formatTempId(t.nodeId) << "\n";
             ok = false;
-            continue;
         }
-        TempNode rec = t;
-        rec.nodeId = id;
-        tempNodes.push_back(rec);
     }
     return ok;
 }
@@ -585,6 +659,7 @@ std::string web_importTemps(const std::string& csv) {
     // 先验后换（D1）：先在副本图上试载，成功才动真实图/台账——拒收路径零副作用，
     // 不再依赖"变更到一半再回滚"，消除回滚不完整窗口（对照 importBikes 的 n==0 拦截）
     const bool wasDirty = tempsDirty;
+    const bool wasLoadFailed = tempsLoadFailed;
     if (!writeFileRaw("import_temps.csv", csv)) return errJson("写入失败");
     {
         // 副本图先清掉现有临时节点：与真实图替换时的初始 id 空间一致，避免同 id 误判冲突
@@ -592,6 +667,10 @@ std::string web_importTemps(const std::string& csv) {
         for (size_t i = 0; i < tempNodes.size(); ++i) removeTempNode(scratch, tempNodes[i].nodeId);
         std::vector<TempNode> probe;
         if (loadTemps("import_temps.csv", probe, scratch) <= 0) {
+            // 预检失败：副本图上的 remove/addTempNode 会写全局脏标记，恢复为导入前的值；
+            // 解析失败还会置 tempsLoadFailed，同样恢复（预检不得改变任何全局状态）
+            tempsDirty = wasDirty;
+            tempsLoadFailed = wasLoadFailed;
             return errJson("临时节点文件为空、没有有效数据行或无法解析，已取消导入");
         }
     }
@@ -604,6 +683,7 @@ std::string web_importTemps(const std::string& csv) {
     if (n <= 0) {
         const bool rolledBack = restoreTempNodes(g, tempNodes, backup);
         tempsDirty = wasDirty;
+        tempsLoadFailed = wasLoadFailed;  // 回滚旧世界：解析失败置位的封锁一并恢复
         return errJson(rolledBack
                            ? "临时节点文件为空、没有有效数据行或无法解析，已取消导入"
                            : "临时节点文件为空、没有有效数据行或无法解析，已取消导入（回滚不完整，建议刷新页面重置数据）");
@@ -612,11 +692,48 @@ std::string web_importTemps(const std::string& csv) {
     // loadTemps 内部 addTempNode 已维护 adj/idToIdx；fixDangling 的恢复路径同样自行维护，无需再 buildAdj
     const int fixed = fixDanglingBikeRefs(bikes, tempNodes, g);
     if (fixed > 0) bikesDirty = true;
-    // 与 main.cpp:45 / web_load 同源门控：bikes 为空（未加载或载入失败）时
-    // 所有临时节点都像“无引用孤儿”，GC 会误删；此时跳过回收
-    if (!bikes.empty()) gcOrphanTempNodes(g, bikes, tempNodes);
+    // 与 startup.cpp:33 / web_load 同源门控：只有 bikes 完整载入（>0 行且无跳过/归一化）
+    // 才允许回收。!bikes.empty() 保护不了“部分载入”：被跳过行引用的临时节点
+    // 在内存中已无引用，GC 会连同图节点与台账一起永久删除。
+    if (gBikesLoadOk) gcOrphanTempNodes(g, bikes, tempNodes);
     std::ostringstream os;
     os << "{\"ok\":true,\"count\":" << tempNodes.size() << ",\"fixed\":" << fixed << ",\"skipped\":" << skipped << "}";
+    return os.str();
+}
+
+// ---------- 导入预检（P2 部分导入确认） ----------
+// 只解析不提交：前端先看到“有效 N 行 / 异常 M 行”，确认后才调用 import*。
+// 预检不得改变任何全局状态（脏标记、tempsLoadFailed 均恢复）。
+std::string web_precheckBikes(const std::string& csv) {
+    const bool wasDirty = bikesDirty;
+    if (!writeFileRaw("import_bikes.csv", csv)) return errJson("写入失败");
+    std::vector<Bike> nb;
+    int skipped = 0;
+    const int n = loadBikes("import_bikes.csv", nb, &g, &skipped);
+    bikesDirty = wasDirty;  // 预检不产生未保存修改
+    if (n <= 0) return errJson("单车文件为空或没有有效数据行");
+    std::ostringstream os;
+    os << "{\"ok\":true,\"count\":" << n << ",\"skipped\":" << skipped << "}";
+    return os.str();
+}
+
+std::string web_precheckTemps(const std::string& csv) {
+    const bool wasDirty = tempsDirty;
+    const bool wasLoadFailed = tempsLoadFailed;
+    if (!writeFileRaw("import_temps.csv", csv)) {
+        tempsLoadFailed = wasLoadFailed;
+        return errJson("写入失败");
+    }
+    Graph scratch = g;
+    for (size_t i = 0; i < tempNodes.size(); ++i) removeTempNode(scratch, tempNodes[i].nodeId);
+    std::vector<TempNode> probe;
+    int skipped = 0;
+    const int n = loadTemps("import_temps.csv", probe, scratch, &skipped);
+    tempsDirty = wasDirty;
+    tempsLoadFailed = wasLoadFailed;  // 预检解析失败不得封锁后续保存
+    if (n <= 0) return errJson("临时节点文件为空、没有有效数据行或无法解析");
+    std::ostringstream os;
+    os << "{\"ok\":true,\"count\":" << n << ",\"skipped\":" << skipped << "}";
     return os.str();
 }
 
@@ -678,8 +795,10 @@ EMSCRIPTEN_BINDINGS(campus) {
     emscripten::function("findNode", &web_findNode);
     emscripten::function("nearestNode", &web_nearestNode);
     emscripten::function("shortestPath", &web_shortestPath);
+    emscripten::function("topPaths", &web_topPaths);
     emscripten::function("multiStep", &web_multiStep);
     emscripten::function("minHops", &web_minHops);
+    emscripten::function("dijkstraTrace", &web_dijkstraTrace);
     emscripten::function("nearestParking", &web_nearestParking);
     emscripten::function("returnPreview", &web_returnPreview);
     emscripten::function("borrow", &web_borrow);
@@ -688,6 +807,8 @@ EMSCRIPTEN_BINDINGS(campus) {
     emscripten::function("removeTemp", &web_removeTemp);
     emscripten::function("importBikes", &web_importBikes);
     emscripten::function("importTemps", &web_importTemps);
+    emscripten::function("precheckBikes", &web_precheckBikes);
+    emscripten::function("precheckTemps", &web_precheckTemps);
     emscripten::function("save", &web_save);
     emscripten::function("markSaved", &web_markSaved);
     emscripten::function("repairGhosts", &web_repairGhosts);
