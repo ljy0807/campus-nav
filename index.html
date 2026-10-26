@@ -8,36 +8,78 @@
   <link rel="stylesheet" href="vendor/leaflet-minimap.css" />
   <link rel="stylesheet" href="vendor/Control.FullScreen.css" />
   <link rel="stylesheet" href="vendor/element-plus.css" />
-  <link rel="stylesheet" href="vendor/driver.css" />
+  <link rel="stylesheet" href="vendor/element-plus-dark.css" />
   <link rel="stylesheet" href="css/app.css" />
+  <link rel="stylesheet" href="css/bigscreen.css" />
 </head>
 <body>
-  <div id="app" v-cloak>
+  <!-- 静态启动/错误壳：不依赖 Vue / Element Plus；Vue 成功挂载后由 app.js 移除。
+       资源脚本加载失败时，12 秒后自动切换为错误提示，避免永久白屏。 -->
+  <div id="boot-fallback" class="boot boot-fallback" role="status" aria-live="polite" aria-busy="true">
+    <div class="boot-aurora" aria-hidden="true"></div>
+    <div class="boot-card">
+      <div class="boot-kicker">CAMPUS NAVIGATION · WASM</div>
+      <div class="boot-hero" aria-label="校园导航与共享单车"><span>校园导航</span><em>与共享单车</em></div>
+      <div class="boot-orbit" aria-hidden="true"><i></i><i></i><i></i></div>
+      <div class="boot-spinner"></div>
+      <div class="boot-title" data-boot-title>正在加载校园导航引擎…</div>
+      <div class="boot-sub" data-boot-sub>若长时间停留在此页面，说明加载失败，请检查网络后刷新。</div>
+      <button class="boot-retry boot-fallback-retry" type="button" onclick="location.reload()" aria-label="刷新页面重新加载">刷新页面</button>
+      <noscript><div class="boot-sub err">当前浏览器已禁用 JavaScript，无法加载校园导航，请启用后刷新。</div></noscript>
+    </div>
+  </div>
+  <script>
+    (function () {
+      var shell = document.getElementById('boot-fallback');
+      if (!shell) return;
+      setTimeout(function () {
+        if (!shell.isConnected) return; // Vue 已挂载并移除启动壳
+        shell.classList.add('is-error');
+        shell.setAttribute('aria-busy', 'false');
+        var title = shell.querySelector('[data-boot-title]');
+        var sub = shell.querySelector('[data-boot-sub]');
+        if (title) title.textContent = '加载失败';
+        if (sub) sub.textContent = '页面资源加载失败，请检查网络后刷新。';
+      }, 12000);
+    })();
+  </script>
+
+  <div id="app">
+    <a class="skip-link" href="#pane-query" :tabindex="booted ? 0 : -1" :aria-hidden="booted ? null : 'true'" @click.prevent="skipToQuery">跳到查询面板</a>
     <div class="boot" v-if="!booted">
+      <div class="boot-aurora" aria-hidden="true"></div>
       <div id="boot-particles" class="boot-particles"></div>
       <div class="boot-card">
+        <div class="boot-kicker">CAMPUS NAVIGATION · WASM</div>
+        <div class="boot-hero" aria-label="校园导航与共享单车"><span>校园导航</span><em>与共享单车</em></div>
+        <div class="boot-orbit" aria-hidden="true"><i></i><i></i><i></i></div>
         <div class="boot-spinner" v-if="!bootError"></div>
         <div class="boot-title" :class="{ err: bootError }">{{ bootError ? '加载失败' : '正在加载校园导航引擎…' }}</div>
         <div class="boot-sub">{{ bootError ? bootError : bootPhases[bootPhase] }}</div>
         <div class="boot-dots" v-if="!bootError"><i v-for="(p, i) in bootPhases" :key="i" :class="{ on: i <= bootPhase }"></i></div>
+        <button v-if="!bootError && !fastMode" class="boot-skip" @click="skipBootPace" aria-label="跳过启动动画">跳过动画</button>
+        <button v-if="bootError" class="boot-retry" @click="retryBoot" aria-label="重新加载页面">重试</button>
       </div>
     </div>
 
-    <div class="layout" v-else>
+    <div class="layout" v-cloak :inert="!booted" :aria-hidden="booted ? null : 'true'">
       <section class="map-side">
         <div id="map" role="region" aria-label="校园地图：节点、路径与单车位置"></div>
         <div class="map-title">
           <div class="mt-main">江西师范大学青山湖校区</div>
           <div class="mt-sub">校园导航与共享单车可视化</div>
         </div>
-        <div class="map-tools">
-          <button class="tool-btn wide" :title="online ? '切换回离线矢量底图' : '切换在线底图（高德）'" aria-label="切换在线/离线底图" :aria-pressed="online" @click="toggleOnline">{{ online ? '离线底图' : '在线底图' }}</button>
+        <div class="map-tools" id="map-tools" :class="{ open: toolsOpen }">
+          <button class="tool-btn tools-toggle" :title="toolsOpen ? '收起工具' : '展开工具'" :aria-label="toolsOpen ? '收起工具' : '展开工具'" :aria-expanded="toolsOpen ? 'true' : 'false'" aria-controls="map-tools" @click="toolsOpen = !toolsOpen">⚙</button>
+          <button class="tool-btn wide" data-tour="online" :title="online ? '切换回离线矢量底图' : '切换在线底图（高德）'" aria-label="切换在线/离线底图" :aria-pressed="online" @click="toggleOnline">{{ online ? '离线底图' : '在线底图' }}</button>
+          <button class="tool-btn wide" title="指挥中心大屏（F6C）" aria-label="打开指挥中心大屏" onclick="BigScreen.toggle()">大屏</button>
+          <a class="tool-btn wide" href="3d.html" title="3D 校园（MapLibre）" aria-label="打开 3D 校园">3D</a>
           <button class="tool-btn" title="回到全校视图" aria-label="回到全校视图" @click="fitAll">⛶</button>
           <button class="tool-btn wide" title="演示引导" aria-label="演示引导" @click="startTour">演示</button>
-          <button class="tool-btn" title="自动演示（会修改数据，可刷新重置）" aria-label="自动演示" @click="startDemo">🎬</button>
-          <button class="tool-btn" :title="dark ? '切换亮色模式' : '切换夜模式'" aria-label="切换夜模式" :aria-pressed="dark" @click="toggleDark">{{ dark ? '☀' : '🌙' }}</button>
+          <button class="tool-btn" data-tour="demo" title="自动演示（会修改数据，可刷新重置）" aria-label="自动演示" @click="startDemo">🎬</button>
+          <button class="tool-btn" data-tour="dark" :title="dark ? '切换亮色模式' : '切换夜模式'" :aria-label="dark ? '切换亮色模式' : '切换夜模式'" :aria-pressed="dark" @click="toggleDark">{{ dark ? '☀' : '🌙' }}</button>
           <button class="tool-btn" :title="soundOn ? '关闭提示音' : '开启提示音'" aria-label="切换提示音" :aria-pressed="soundOn" @click="toggleSound">{{ soundOn ? '🔊' : '🔈' }}</button>
-          <button class="tool-btn" :title="heat ? '关闭热力图' : '节点连接热力图'" aria-label="切换热力图" :aria-pressed="heat" @click="toggleHeat">🔥</button>
+          <button class="tool-btn" data-tour="heat" :title="heat ? '关闭热力图' : '节点连接热力图'" aria-label="切换热力图" :aria-pressed="heat" @click="toggleHeat">🔥</button>
         </div>
         <div class="legend">
           <span><i class="dot dot-intersection"></i>路口</span>
@@ -47,7 +89,10 @@
           <span><i class="dot dot-bike"></i>单车</span>
           <span><i class="dash"></i>路径</span>
         </div>
-        <div class="pick-hint" v-if="pickHint" aria-live="polite">{{ pickHint }}</div>
+        <div class="pick-hint" v-if="pickHint" aria-live="polite">
+          <span class="pick-hint-text">{{ pickHint }}</span>
+          <button class="pick-cancel" @click="cancelPick" aria-label="取消地图点选">取消点选</button>
+        </div>
         <div id="demo-caption" aria-live="polite"></div>
         <div id="trace-caption" class="trace-caption" v-if="traceCaption" aria-live="polite">{{ traceCaption }}</div>
   <div id="cine-endcard" aria-hidden="true">
@@ -71,15 +116,13 @@
           <el-tab-pane label="路径查询" name="query">
             <div class="pane-body">
               <div class="field-row">
-                <el-select v-model="q.from" filterable clearable placeholder="起点（可输入搜索）" class="grow" :filter-method="nodeFilter" @visible-change="onNodeMenuToggle">
-                  <el-option v-for="n in nodeOptionsView" :key="'f' + n.id" :value="n.id" :label="n.label"></el-option>
-                </el-select>
+                <el-select-v2 v-model="q.from" :options="nodeOptionsView" filterable clearable placeholder="起点（可输入搜索）" aria-label="起点" class="grow" :filter-method="nodeFilter" @visible-change="onNodeMenuToggle">
+                </el-select-v2>
                 <el-button @click="pickFor('from')">地图选点</el-button>
               </div>
               <div class="field-row">
-                <el-select v-model="q.to" filterable clearable placeholder="终点（可输入搜索）" class="grow" :filter-method="nodeFilter" @visible-change="onNodeMenuToggle">
-                  <el-option v-for="n in nodeOptionsView" :key="'t' + n.id" :value="n.id" :label="n.label"></el-option>
-                </el-select>
+                <el-select-v2 v-model="q.to" :options="nodeOptionsView" filterable clearable placeholder="终点（可输入搜索）" aria-label="终点" class="grow" :filter-method="nodeFilter" @visible-change="onNodeMenuToggle">
+                </el-select-v2>
                 <el-button @click="pickFor('to')">地图选点</el-button>
               </div>
               <div class="btn-row">
@@ -88,9 +131,8 @@
               </div>
 
               <el-divider content-position="left">多段导航</el-divider>
-              <el-select v-model="q.stops" multiple filterable clearable :multiple-limit="100" placeholder="依次选择 2 个以上节点" class="w-full" :filter-method="nodeFilter" @visible-change="onNodeMenuToggle">
-                <el-option v-for="n in nodeOptionsView" :key="'s' + n.id" :value="n.id" :label="n.label"></el-option>
-              </el-select>
+              <el-select-v2 v-model="q.stops" :options="nodeOptionsView" multiple filterable clearable :multiple-limit="100" placeholder="依次选择 2 个以上节点" aria-label="途经点（多段导航）" class="w-full" :filter-method="nodeFilter" @visible-change="onNodeMenuToggle">
+              </el-select-v2>
               <div class="stops-order" v-if="q.stops.length >= 2" ref="stopsListEl" aria-label="途经顺序（可拖拽排序）">
                 <div class="stop-row" v-for="(id, i) in q.stops" :key="id" :data-id="id">
                   <span class="seg-idx">{{ i + 1 }}</span>
@@ -102,7 +144,8 @@
               <el-button class="w-full" style="margin-top: 8px;" @click="doTopPaths">三条推荐路线（Yen K 短路）</el-button>
               <el-button class="w-full" style="margin-top: 8px;" @click="shareQuery">分享当前查询（生成链接）</el-button>
 
-              <div class="result-card" v-if="qResult">
+              <div class="query-notice" v-if="qNotice" role="status" aria-live="polite">{{ qNotice }}</div>
+              <div class="result-card" v-if="qResult" role="region" aria-label="路径查询结果" aria-live="polite">
                 <div class="result-head">
                   <span v-if="qKind === 'minhops'">最少 <b>{{ qHopsView }}</b> 跳</span>
                   <span v-else>总距离 <b>{{ fmtDist(qDistView) }}</b> · {{ (qResult.path || []).length }} 个节点</span>
@@ -113,7 +156,9 @@
                 </div>
                 <div class="seg-list" v-if="qKind === 'top3' && qRoutes.length > 1">
                   <div class="seg-row route-row" v-for="(r, i) in qRoutes" :key="'route' + i"
-                       :class="{ 'route-active': i === qRouteIdx }" @click="pickRoute(i)">
+                       role="button" tabindex="0" :aria-label="'选择第 ' + (i + 1) + ' 条推荐路线'"
+                       :class="{ 'route-active': i === qRouteIdx }" @click="pickRoute(i)"
+                       @keydown.enter="pickRoute(i)" @keydown.space.prevent="pickRoute(i)">
                     <span class="seg-idx">{{ i + 1 }}</span>
                     <span class="seg-names">总距离 {{ fmtDist(r.dist) }} · {{ (r.path || []).length }} 个节点</span>
                     <span class="seg-dir">{{ routeTag(i) }}</span>
@@ -149,7 +194,7 @@
                 <el-tag v-if="bikesDirty" size="small" type="warning" effect="dark">未保存</el-tag>
               </div>
               <div class="bike-list">
-                <div class="bike-card" v-for="b in bikes" :key="b.bikeId" :class="'st-' + b.status">
+                <div class="bike-card" v-for="b in pagedBikes" :key="b.bikeId" :class="'st-' + b.status">
                   <div class="bc-head">
                     <span class="bc-id">{{ b.bikeId }}</span>
                     <el-tag size="small" :type="statusTagType(b.status)">{{ statusText(b.status) }}</el-tag>
@@ -162,6 +207,11 @@
                   </div>
                 </div>
                 <div v-if="!bikes.length" class="empty">暂无单车数据</div>
+              </div>
+              <div class="bike-pager" v-if="bikePageCount > 1">
+                <el-pagination small background layout="prev, pager, next"
+                  :page-size="BIKE_PAGE_SIZE" :total="bikes.length"
+                  v-model:current-page="bikePage" />
               </div>
               <el-divider content-position="left">工具</el-divider>
               <el-button class="w-full" plain @click="pickFor('parking')">点选位置查询最近停车场</el-button>
@@ -201,15 +251,30 @@
             </div>
           </el-tab-pane>
           <el-tab-pane label="数据洞察" name="insight">
+            <div id="insight-fx" aria-hidden="true">
+              <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+            </div>
             <div class="section-title">图结构统计（数据来自 WASM 桥层）</div>
-            <div id="chart-degree" class="chart-box"></div>
-            <div id="chart-types" class="chart-box"></div>
-            <div id="chart-weights" class="chart-box"></div>
-            <div id="chart-3d" class="chart-box"></div>
+            <div id="chart-degree" class="chart-box" role="img" aria-label="节点度数分布柱状图"></div>
+            <div id="chart-types" class="chart-box" role="img" aria-label="节点类型占比环形图"></div>
+            <div id="chart-weights" class="chart-box" role="img" aria-label="路段长度分布柱状图"></div>
+            <div id="chart-3d" class="chart-box chart-3d" role="img" aria-label="连接度最强节点的 3D 柱状图"></div>
             <div class="hint">图表仅做可视化：度数分布看路网结构，类型分布看节点构成，路段长度看权重分布；3D 柱群展示连接度最强的节点。</div>
           </el-tab-pane>
         </el-tabs>
       </aside>
+
+      <el-tour v-model="tourOpen" type="primary">
+        <el-tour-step target=".map-title" placement="bottom" title="校园地图" description="离线矢量底图：节点/路段/单车；右上角可切换在线高德底图。"></el-tour-step>
+        <el-tour-step target="[data-tour='online']" placement="bottom" title="在线底图" description="点击切换在线/离线；连续失败自动回退。"></el-tour-step>
+        <el-tour-step target="[data-tour='dark']" placement="bottom" title="夜模式" description="一键切换暗色配色（含地图瓦片滤镜），开关状态会自动记住。"></el-tour-step>
+        <el-tour-step target="[data-tour='heat']" placement="bottom" title="连接热力图" description="叠加显示节点连接热度（度数归一），开关状态同样会自动记住。"></el-tour-step>
+        <el-tour-step target="[data-tour='demo']" placement="bottom" title="自动演示" description="一键跑通「查询 → 回放 → 借还车 → 查看保存入口」（不自动下载文件；会修改数据，刷新即重置）。"></el-tour-step>
+        <el-tour-step target="#pane-query" placement="left" title="路径查询" description="选起点/终点，点「最短路径」看红色路线与方向箭头，小车沿线回放。"></el-tour-step>
+        <el-tour-step target="#tab-bike" placement="bottom" title="共享单车" description="借车/还车（地图点选或输入坐标）。"></el-tour-step>
+        <el-tour-step target="#tab-data" placement="bottom" title="数据管理" description="保存并下载 CSV / 导入数据。"></el-tour-step>
+        <el-tour-step target="#tab-insight" placement="bottom" title="数据洞察" description="图结构统计：度数分布、节点类型、路段长度与 3D 连接度柱群（数据来自 WASM 桥层）。"></el-tour-step>
+      </el-tour>
     </div>
   </div>
 
@@ -227,20 +292,20 @@
   <script src="dist/data_campus.js"></script>
   <script src="vendor/confetti.browser.js"></script>
   <script src="vendor/fireworks.umd.js"></script>
-  <script src="vendor/driver.js.iife.js"></script>
-  <script src="vendor/gsap.min.js"></script>
-  <script src="vendor/SplitText.min.js"></script>
-  <script src="vendor/echarts.min.js"></script>
-  <script src="vendor/echarts-gl.min.js"></script>
   <script src="vendor/leaflet-heat.js"></script>
   <script src="vendor/auto-animate.iife.js"></script>
-  <script src="vendor/tsparticles.slim.bundle.min.js"></script>
-  <script src="vendor/pinyin-pro.min.js"></script>
   <script src="vendor/lz-string.min.js"></script>
+  <!-- 重库按需懒加载（P1-5，见 js/app.js 的 loadScript）：echarts/echarts-gl（数据洞察）、
+       gsap/SplitText（自动演示）、tsParticles（启动页粒子）、pinyin-pro（拼音搜索）；
+       演示引导改用 Element Plus 内置 Tour，无额外脚本 -->
   <script src="vendor/Sortable.min.js"></script>
   <script src="js/api.js"></script>
   <script src="js/map.js"></script>
+  <script src="js/app-charts.js"></script>
+  <script src="js/app-demo.js"></script>
   <script src="js/app.js"></script>
+  <script src="js/topology.js"></script>
+  <script src="js/bigscreen.js"></script>
   <div id="fx-layer" aria-hidden="true"></div>
 </body>
 </html>

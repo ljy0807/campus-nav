@@ -1,0 +1,619 @@
+/* bigscreen.css —— F6C-A 指挥中心大屏 + F6C-B 路网拓扑。
+   所有大屏样式都限定在 body.bigscreen 或动态插入的 .bs-* / .topology-* 之下，
+   不改变默认页面；bigscreen.css 在 app.css 之后加载。 */
+
+body.bigscreen,
+.topology-overlay {
+  --bs-cyan: #3ee6c4;
+  --bs-green: #54e08a;
+  --bs-gold: #f6c453;
+  --bs-violet: #c084fc;
+  --bs-ink: #041016;
+  --bs-text: #e8fbf5;
+  --bs-muted: #82b3a7;
+  --bs-line: rgba(62, 230, 196, .22);
+  --bs-glass: rgba(7, 24, 30, .78);
+}
+
+/* ---------- 大屏总布局：隐藏右侧面板，地图铺满 ---------- */
+body.bigscreen { overflow: hidden; background: #041016; }
+.bigscreen .panel { display: none !important; }
+.bigscreen .layout { height: 100vh; height: 100dvh; background: #041016; }
+.bigscreen .map-side {
+  width: 100%;
+  flex: 1 1 100%;
+  height: 100vh;
+  height: 100dvh;
+}
+.bigscreen #map { background: #06131a; }
+.bigscreen .map-title,
+.bigscreen .map-tools,
+.bigscreen .legend { display: none !important; }
+
+/* 暗色瓦片（在线底图）；离线矢量底图直接吃 #map 的深色背景 */
+.bigscreen .leaflet-tile-pane {
+  filter: invert(1) hue-rotate(180deg) brightness(.64) contrast(1.08) saturate(.78) !important;
+  transition: filter .6s ease;
+}
+/* 暗角 + 细网格：叠在 Leaflet 瓦片/路径之上、HUD 之下 */
+.bigscreen #map::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 450;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse at 50% 45%, rgba(4, 16, 22, 0) 42%, rgba(2, 8, 12, .62) 100%),
+    repeating-linear-gradient(0deg, rgba(62, 230, 196, .055) 0 1px, transparent 1px 48px),
+    repeating-linear-gradient(90deg, rgba(62, 230, 196, .055) 0 1px, transparent 1px 48px);
+}
+.bigscreen .leaflet-control-attribution {
+  background: rgba(4, 16, 22, .62) !important;
+  color: #7fa79e !important;
+  backdrop-filter: blur(8px);
+}
+.bigscreen .leaflet-control-attribution a { color: #9ed7c9 !important; }
+/* 大屏下压暗底图路网边，让红色路径与节点更突出（仅视觉，不改数据） */
+.bigscreen #map .leaflet-overlay-pane path[stroke="#cbd5cf"] { stroke-opacity: .42; }
+.bigscreen .leaflet-control-zoom,
+.bigscreen .leaflet-control-fullscreen { display: none !important; }
+
+/* ---------- HUD 骨架 ---------- */
+.bs-hud {
+  position: absolute;
+  inset: 0;
+  z-index: 760;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 390px);
+  grid-template-rows: auto 1fr auto;
+  gap: 16px;
+  padding: 20px clamp(16px, 2.4vw, 34px);
+  color: var(--bs-text);
+  font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", system-ui, -apple-system, "Segoe UI", sans-serif;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .55);
+  pointer-events: none;
+}
+.bs-hud button,
+.bs-hud select,
+.bs-hud .bs-card { pointer-events: auto; }
+
+.bs-head {
+  grid-column: 1;
+  grid-row: 1;
+  align-self: start;
+  justify-self: start;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  max-width: 100%;
+  padding: 13px 16px 13px 20px;
+  border: 1px solid var(--bs-line);
+  border-radius: 16px;
+  background:
+    linear-gradient(135deg, rgba(11, 38, 44, .88), rgba(5, 18, 24, .68));
+  box-shadow: 0 14px 44px rgba(0, 0, 0, .42), inset 0 1px 0 rgba(255, 255, 255, .06);
+  backdrop-filter: blur(16px) saturate(1.25);
+  position: relative;
+  overflow: hidden;
+}
+.bs-head::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 12px;
+  bottom: 12px;
+  width: 3px;
+  border-radius: 3px;
+  background: linear-gradient(180deg, var(--bs-cyan), var(--bs-gold));
+  box-shadow: 0 0 14px rgba(62, 230, 196, .8);
+}
+.bs-brand { min-width: 0; }
+.bs-kicker {
+  font-size: 10px;
+  line-height: 1.2;
+  letter-spacing: .3em;
+  color: var(--bs-cyan);
+  opacity: .9;
+}
+.bs-title {
+  margin: 3px 0 0;
+  font-size: clamp(20px, 2.15vw, 29px);
+  line-height: 1.18;
+  font-weight: 800;
+  letter-spacing: .07em;
+  color: #f2fffb;
+  white-space: nowrap;
+}
+.bs-clock {
+  margin-top: 6px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  letter-spacing: .09em;
+  color: var(--bs-gold);
+  white-space: nowrap;
+}
+
+/* ---------- 按钮 ---------- */
+.bs-btn {
+  min-height: 44px;
+  padding: 0 16px;
+  border-radius: 10px;
+  border: 1px solid rgba(62, 230, 196, .3);
+  background: rgba(8, 28, 34, .82);
+  color: #dffcf4;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: .03em;
+  cursor: pointer;
+  transition: transform .16s ease, box-shadow .16s ease, background .16s ease, border-color .16s ease;
+}
+.bs-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: rgba(62, 230, 196, .65);
+  box-shadow: 0 0 22px rgba(62, 230, 196, .2);
+}
+.bs-btn:focus-visible {
+  outline: 2px solid var(--bs-gold);
+  outline-offset: 2px;
+}
+.bs-btn:disabled { opacity: .55; cursor: progress; transform: none; }
+.bs-exit {
+  flex: none;
+  min-width: 72px;
+  border-color: rgba(246, 196, 83, .45);
+  color: #ffe3a0;
+  background: rgba(44, 33, 8, .55);
+}
+.bs-primary {
+  border-color: transparent;
+  color: #03251c;
+  background: linear-gradient(120deg, #1fb98d, #54e08a);
+  box-shadow: 0 0 20px rgba(84, 224, 138, .28);
+}
+.bs-gold {
+  border-color: rgba(246, 196, 83, .55);
+  color: #ffe3a0;
+  background: rgba(58, 43, 9, .5);
+}
+.bs-ghost { background: rgba(8, 28, 34, .62); }
+
+/* ---------- 右侧栏 / KPI / 玻璃面板 ---------- */
+.bs-side {
+  grid-column: 2;
+  grid-row: 1 / 4;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+  align-self: start;
+  max-height: 100%;
+}
+.bs-card {
+  border: 1px solid var(--bs-line);
+  border-radius: 16px;
+  background:
+    linear-gradient(150deg, rgba(10, 35, 42, .86), rgba(5, 18, 24, .7));
+  box-shadow: 0 16px 48px rgba(0, 0, 0, .4), inset 0 1px 0 rgba(255, 255, 255, .055);
+  backdrop-filter: blur(16px) saturate(1.2);
+}
+.bs-kpis {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  padding: 7px;
+}
+.bs-kpi {
+  padding: 11px 13px 10px;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, .035);
+  border: 1px solid rgba(255, 255, 255, .035);
+}
+.bs-kpi-label {
+  display: block;
+  font-size: 10px;
+  letter-spacing: .18em;
+  color: var(--bs-muted);
+}
+.bs-kpi-value {
+  display: block;
+  margin-top: 5px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 25px;
+  line-height: 1;
+  font-weight: 700;
+  color: #f2fffb;
+}
+.bs-kpi.is-cyan .bs-kpi-value { color: var(--bs-cyan); }
+.bs-kpi.is-green .bs-kpi-value { color: var(--bs-green); }
+.bs-kpi.is-gold .bs-kpi-value { color: var(--bs-gold); }
+.bs-kpi.is-violet .bs-kpi-value { color: var(--bs-violet); }
+
+.bs-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  padding: 16px;
+  min-height: 0;
+  overflow: auto;
+}
+.bs-panel-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: .2em;
+  color: #bff7ea;
+}
+.bs-field { display: flex; flex-direction: column; gap: 6px; }
+.bs-field label {
+  font-size: 10px;
+  letter-spacing: .18em;
+  color: var(--bs-muted);
+}
+.bs-select {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 34px 0 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(62, 230, 196, .3);
+  background-color: rgba(3, 15, 20, .9);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%233ee6c4' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  color: var(--bs-text);
+  font-family: inherit;
+  font-size: 13px;
+  appearance: none;
+  -webkit-appearance: none;
+}
+.bs-select:focus-visible {
+  outline: 2px solid var(--bs-cyan);
+  outline-offset: 1px;
+}
+.bs-select option { background: #071a20; color: var(--bs-text); }
+.bs-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.bs-actions-sub { grid-template-columns: 1fr; }
+.bs-actions .bs-btn { padding: 0 10px; }
+
+/* ---------- 路线摘要 ---------- */
+.bs-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 92px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(62, 230, 196, .16);
+}
+.bs-summary-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10px;
+  letter-spacing: .18em;
+  color: var(--bs-muted);
+}
+.bs-status {
+  max-width: 68%;
+  font-size: 11px;
+  letter-spacing: 0;
+  text-align: right;
+  color: #8ff5df;
+}
+.bs-status.is-warn { color: var(--bs-gold); }
+.bs-status.is-error { color: #ff8e8e; }
+.bs-status.is-ok { color: var(--bs-cyan); }
+.bs-summary-body {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #d9f5ee;
+}
+.bs-summary-empty { color: #7fa79e; font-size: 12px; }
+.bs-route-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border-left: 2px solid rgba(62, 230, 196, .42);
+  background: rgba(62, 230, 196, .055);
+}
+.bs-route-line.is-best {
+  border-left-color: var(--bs-gold);
+  background: rgba(246, 196, 83, .085);
+}
+.bs-route-tag {
+  flex: none;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--bs-gold);
+  white-space: nowrap;
+}
+.bs-route-text { min-width: 0; color: #e2fcf5; }
+.bs-route-names {
+  font-size: 11px;
+  line-height: 1.55;
+  color: #93c7bb;
+  word-break: break-word;
+}
+
+/* ---------- 左下角提示 ---------- */
+.bs-foot {
+  grid-column: 1;
+  grid-row: 3;
+  align-self: end;
+  justify-self: start;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  padding: 8px 14px;
+  border: 1px solid rgba(62, 230, 196, .16);
+  border-radius: 999px;
+  background: rgba(5, 18, 24, .62);
+  color: var(--bs-muted);
+  font-size: 11px;
+  letter-spacing: .08em;
+  backdrop-filter: blur(10px);
+  pointer-events: none;
+}
+.bs-foot-sep { color: rgba(246, 196, 83, .7); }
+
+/* ---------- 响应式：<=920px HUD 上下布局，按钮 >=44px ---------- */
+@media (max-width: 920px) {
+  .bs-hud {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto auto;
+    align-content: start;
+    gap: 10px;
+    padding: 10px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .bs-head {
+    grid-column: 1;
+    grid-row: 1;
+    width: 100%;
+    justify-self: stretch;
+    padding: 11px 12px 11px 16px;
+    gap: 10px;
+  }
+  .bs-title { font-size: 19px; white-space: normal; }
+  .bs-kicker { font-size: 9px; letter-spacing: .22em; }
+  .bs-clock { font-size: 11px; }
+  .bs-exit { min-width: 44px; padding: 0 14px; }
+  .bs-side {
+    grid-column: 1;
+    grid-row: 2;
+    width: 100%;
+    max-height: none;
+    gap: 10px;
+  }
+  .bs-kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .bs-kpi { padding: 8px 9px; }
+  .bs-kpi-label { font-size: 9px; letter-spacing: .1em; }
+  .bs-kpi-value { font-size: 19px; margin-top: 4px; }
+  .bs-panel { overflow: visible; }
+  .bs-foot { grid-column: 1; grid-row: 3; }
+  .bs-btn, .bs-select { min-height: 44px; }
+}
+
+@media (max-width: 640px) {
+  .bs-hud { padding: 8px; }
+  .bs-head { flex-wrap: wrap; }
+  .bs-brand { flex: 1 1 100%; }
+  .bs-exit { margin-left: auto; }
+  .bs-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bs-actions { grid-template-columns: 1fr; }
+  .bs-foot { display: none; }
+  .bigscreen #map::after {
+    background:
+      radial-gradient(ellipse at 50% 40%, rgba(4, 16, 22, 0) 48%, rgba(2, 8, 12, .58) 100%),
+      repeating-linear-gradient(0deg, rgba(62, 230, 196, .045) 0 1px, transparent 1px 34px),
+      repeating-linear-gradient(90deg, rgba(62, 230, 196, .045) 0 1px, transparent 1px 34px);
+  }
+}
+
+/* ---------- F6C-B：路网拓扑全屏 overlay ---------- */
+body.topology-open { overflow: hidden; }
+
+.topology-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 5000;
+  display: flex;
+  flex-direction: column;
+  color: var(--bs-text);
+  font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", system-ui, -apple-system, "Segoe UI", sans-serif;
+  background:
+    radial-gradient(1100px 560px at 50% -10%, rgba(24, 86, 84, .55), transparent 62%),
+    radial-gradient(900px 520px at 88% 108%, rgba(246, 196, 83, .07), transparent 60%),
+    #041016;
+  animation: topologyIn .22s ease both;
+}
+@keyframes topologyIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.topology-overlay::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(0deg, rgba(62, 230, 196, .04) 0 1px, transparent 1px 56px),
+    repeating-linear-gradient(90deg, rgba(62, 230, 196, .04) 0 1px, transparent 1px 56px),
+    radial-gradient(ellipse at 50% 45%, transparent 48%, rgba(2, 8, 12, .55) 100%);
+}
+.topology-head {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex: none;
+  padding: 13px 20px;
+  border-bottom: 1px solid var(--bs-line);
+  background: rgba(4, 16, 22, .72);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 10px 32px rgba(0, 0, 0, .28);
+}
+.topology-title-wrap { min-width: 0; }
+.topology-kicker {
+  font-size: 9px;
+  letter-spacing: .3em;
+  color: var(--bs-cyan);
+}
+.topology-title {
+  margin: 2px 0 0;
+  font-size: clamp(16px, 1.9vw, 22px);
+  font-weight: 800;
+  letter-spacing: .08em;
+  color: #f0fffa;
+}
+.topology-meta {
+  margin-left: 24px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  letter-spacing: .06em;
+  color: var(--bs-muted);
+  white-space: nowrap;
+}
+.topology-close {
+  flex: none;
+  margin-left: auto;
+  min-width: 76px;
+  min-height: 44px;
+  padding: 0 18px;
+  border-radius: 10px;
+  border: 1px solid rgba(246, 196, 83, .45);
+  background: rgba(44, 33, 8, .55);
+  color: #ffe3a0;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background .16s ease, box-shadow .16s ease, transform .16s ease;
+}
+.topology-close:hover {
+  transform: translateY(-1px);
+  background: rgba(68, 51, 10, .7);
+  box-shadow: 0 0 20px rgba(246, 196, 83, .18);
+}
+.topology-close:focus-visible {
+  outline: 2px solid var(--bs-cyan);
+  outline-offset: 2px;
+}
+.topology-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  z-index: 1;
+}
+.topology-canvas { position: absolute; inset: 0; }
+.topology-canvas canvas { display: block; }
+.topology-msg {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px;
+  text-align: center;
+  font-size: 14px;
+  line-height: 1.7;
+  color: #a9d5ca;
+  pointer-events: none;
+}
+.topology-msg[hidden] { display: none; }
+.topology-legend {
+  position: absolute;
+  left: 18px;
+  bottom: 18px;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  max-width: calc(100% - 36px);
+  padding: 8px 14px;
+  border: 1px solid rgba(62, 230, 196, .18);
+  border-radius: 999px;
+  background: rgba(4, 16, 22, .72);
+  color: #a9d5ca;
+  font-size: 11px;
+  letter-spacing: .04em;
+  backdrop-filter: blur(10px);
+  pointer-events: none;
+}
+.topology-legend-item { white-space: nowrap; }
+.topology-legend-item i {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 6px;
+  border-radius: 50%;
+  vertical-align: -1px;
+  box-shadow: 0 0 8px currentColor;
+}
+.topology-hint {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  z-index: 2;
+  color: #6f9a90;
+  font-size: 11px;
+  letter-spacing: .05em;
+  pointer-events: none;
+}
+
+/* ---------- 定位提示（拓扑点击节点后显示名称） ---------- */
+.map-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 34px;
+  z-index: 5200;
+  max-width: min(90vw, 520px);
+  padding: 11px 18px;
+  border: 1px solid rgba(246, 196, 83, .45);
+  border-radius: 999px;
+  background: rgba(6, 24, 29, .92);
+  color: #eafff8;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, .45), 0 0 22px rgba(62, 230, 196, .12);
+  font-size: 13px;
+  line-height: 1.4;
+  letter-spacing: .03em;
+  text-align: center;
+  opacity: 0;
+  transform: translate(-50%, 14px);
+  pointer-events: none;
+  transition: opacity .2s ease, transform .2s ease;
+  backdrop-filter: blur(12px);
+}
+.map-toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+@media (max-width: 920px) {
+  .topology-head { padding: 10px 12px; gap: 10px; }
+  .topology-meta { font-size: 11px; }
+  .topology-hint { display: none; }
+  .topology-legend { left: 10px; bottom: 10px; max-width: calc(100% - 20px); }
+}
+
+@media (max-width: 640px) {
+  .topology-title { font-size: 16px; }
+  .topology-kicker { display: none; }
+  .topology-meta { display: none; }
+  .topology-close { min-width: 44px; padding: 0 14px; }
+  .map-toast { bottom: 20px; font-size: 12px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .topology-overlay { animation: none; }
+  .bs-btn, .topology-close, .map-toast { transition: none; }
+}

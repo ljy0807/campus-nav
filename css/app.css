@@ -41,13 +41,49 @@ body {
   height: 100vh;
   height: 100dvh; display: flex; align-items: center; justify-content: center;
   background: linear-gradient(160deg, #eef6f0 0%, #e3efe8 100%);
-  position: relative; overflow: hidden;
+  position: fixed; inset: 0; z-index: 2000; overflow: hidden;
+}
+.boot-aurora {
+  position: absolute; inset: -20%;
+  background:
+    radial-gradient(ellipse at 30% 35%, rgba(43, 217, 141, .30), transparent 55%),
+    radial-gradient(ellipse at 75% 60%, rgba(74, 125, 191, .22), transparent 58%),
+    radial-gradient(ellipse at 50% 90%, rgba(127, 211, 171, .20), transparent 60%);
+  filter: blur(10px); animation: auroraDrift 7s ease-in-out infinite alternate;
+}
+@keyframes auroraDrift {
+  from { transform: translate3d(-2%, -1%, 0) scale(1); opacity: .75; }
+  to { transform: translate3d(2%, 2%, 0) scale(1.08); opacity: 1; }
 }
 .boot-particles { position: absolute; inset: 0; }
 .boot-card {
-  background: #fff; border-radius: 18px; padding: 36px 48px; text-align: center;
-  box-shadow: 0 12px 40px rgba(31, 74, 54, .12);
-  position: relative; z-index: 1;
+  background: rgba(255, 255, 255, .9); border-radius: 22px; padding: 34px 52px 30px; text-align: center;
+  box-shadow: 0 18px 60px rgba(31, 74, 54, .16), 0 0 0 1px rgba(255, 255, 255, .75) inset;
+  position: relative; z-index: 1; backdrop-filter: blur(10px);
+  animation: bootCardIn .7s cubic-bezier(.2, .8, .2, 1) both;
+}
+@keyframes bootCardIn { from { opacity: 0; transform: translateY(14px) scale(.97); } to { opacity: 1; transform: none; } }
+.boot-kicker { font-size: 10px; letter-spacing: 3px; color: #2f7a58; opacity: .8; }
+.boot-hero {
+  margin: 8px 0 2px; font-size: 34px; line-height: 1.15; font-weight: 800; letter-spacing: 2px;
+  background: linear-gradient(100deg, #145c3f 10%, #1f9d6b 45%, #4a7dbf 90%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  filter: drop-shadow(0 6px 20px rgba(31, 157, 107, .28));
+}
+.boot-hero em { display: block; font-style: normal; font-size: 16px; letter-spacing: 6px; margin-top: 4px; opacity: .9; }
+.boot-orbit {
+  position: relative; width: 132px; height: 22px; margin: 4px auto 0;
+}
+.boot-orbit i {
+  position: absolute; left: 50%; top: 50%; width: 7px; height: 7px; margin: -3.5px 0 0 -3.5px;
+  border-radius: 50%; background: #1f9d6b; box-shadow: 0 0 10px rgba(31, 157, 107, .9);
+  animation: orbit 2.6s linear infinite;
+}
+.boot-orbit i:nth-child(2) { background: #4a7dbf; box-shadow: 0 0 10px rgba(74, 125, 191, .9); animation-delay: -.85s; animation-duration: 3.2s; }
+.boot-orbit i:nth-child(3) { background: #7fd3ab; box-shadow: 0 0 10px rgba(127, 211, 171, .9); animation-delay: -1.7s; animation-duration: 2.1s; }
+@keyframes orbit {
+  from { transform: rotate(0deg) translateX(56px) rotate(0deg); }
+  to { transform: rotate(360deg) translateX(56px) rotate(-360deg); }
 }
 .boot-spinner {
   width: 36px; height: 36px; margin: 0 auto 14px; border-radius: 50%;
@@ -61,6 +97,27 @@ body {
 .boot-dots { margin-top: 12px; display: flex; gap: 6px; justify-content: center; }
 .boot-dots i { width: 22px; height: 4px; border-radius: 2px; background: #e2efe7; transition: background .3s; }
 .boot-dots i.on { background: #1f9d6b; }
+/* 「跳过启动动画」（纯展示）：跳过分阶段节拍，真实加载不受影响 */
+.boot-skip {
+  margin-top: 14px; padding: 4px 14px; font-size: 12px; line-height: 20px;
+  color: #4a6357; background: #f2f7f3; border: 1px solid #dde7e0;
+  border-radius: 999px; cursor: pointer; transition: background .2s, color .2s, border-color .2s;
+}
+.boot-skip:hover { background: #e2f5ec; color: #1f7a54; border-color: #c9ecdb; }
+.boot-retry {
+  margin-top: 14px; padding: 6px 22px; font-size: 13px; line-height: 20px; font-weight: 600;
+  color: #fff; background: linear-gradient(120deg, #1f9d6b, #2fa06b); border: none;
+  border-radius: 999px; cursor: pointer; box-shadow: 0 6px 18px rgba(31, 157, 107, .35);
+  transition: transform .18s, box-shadow .18s;
+}
+.boot-retry:hover { transform: translateY(-1px); box-shadow: 0 9px 24px rgba(31, 157, 107, .42); }
+.boot-retry:focus-visible { outline: 2px solid #1f9d6b; outline-offset: 3px; }
+/* 静态启动/错误壳：不依赖 Vue；超时后由 index.html 内联脚本切换为错误态 */
+.boot-sub.err { color: #e5484d; }
+.boot-fallback-retry { display: none; }
+.boot-fallback.is-error .boot-fallback-retry { display: inline-block; }
+.boot-fallback.is-error .boot-spinner { display: none; }
+.boot-fallback.is-error .boot-title { color: #e5484d; }
 
 /* ---------- 总布局 ---------- */
 .layout {
@@ -71,6 +128,18 @@ body {
 @keyframes layoutIn { from { opacity: 0; } to { opacity: 1; } }
 .map-side { position: relative; flex: 1; min-width: 0; }
 #map { position: absolute; inset: 0; background: #eef3ef; }
+
+/* F3：键盘 skip link（默认移出视口，聚焦时浮出） */
+.skip-link {
+  position: fixed; left: 16px; top: -80px; z-index: 2200;
+  padding: 9px 16px; border-radius: 10px; font-size: 13px; font-weight: 600;
+  color: #fff; background: #1f7a54; text-decoration: none;
+  box-shadow: 0 8px 24px rgba(31, 74, 54, .3); transition: top .18s ease;
+}
+.skip-link:focus, .skip-link:focus-visible {
+  top: 12px; outline: 2px solid #7fd3ab; outline-offset: 2px;
+}
+#pane-query:focus { outline: 2px dashed #1f9d6b; outline-offset: -3px; }
 
 /* ---------- 地图浮层 ---------- */
 .map-title {
@@ -91,7 +160,15 @@ body {
   font-size: 15px; color: #1c4a35;
 }
 .tool-btn.wide { width: auto; padding: 0 12px; font-size: 12px; font-weight: 600; }
+a.tool-btn { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
 .tool-btn:hover { background: #fff; }
+.tools-toggle { display: none; } /* 仅窄屏显示（见文件末尾 ≤640px 媒体查询） */
+
+/* 键盘焦点可见（a11y）：按钮/可交互行获得焦点时显示描边 */
+.tool-btn:focus-visible, .boot-skip:focus-visible, .route-row:focus-visible {
+  outline: 2px solid #1f9d6b; outline-offset: 2px;
+}
+.route-row { border-radius: 6px; }
 
 .legend {
   position: absolute; left: 14px; bottom: 14px; z-index: 500;
@@ -121,10 +198,19 @@ body {
 
 .pick-hint {
   position: absolute; top: 16px; left: 50%; transform: translateX(-50%); z-index: 600;
-  background: #1f9d6b; color: #fff; padding: 8px 18px; border-radius: 999px;
+  background: #1f9d6b; color: #fff; padding: 7px 10px 7px 18px; border-radius: 999px;
   font-size: 13px; box-shadow: 0 6px 20px rgba(31, 157, 107, .35);
   animation: pulse 1.6s ease-in-out infinite;
+  display: flex; align-items: center; gap: 10px; max-width: calc(100% - 24px);
 }
+.pick-hint-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pick-cancel {
+  flex: none; border: 1px solid rgba(255, 255, 255, .7); background: rgba(255, 255, 255, .16);
+  color: #fff; border-radius: 999px; padding: 4px 12px; font-size: 12px; cursor: pointer;
+  min-height: 30px;
+}
+.pick-cancel:hover { background: rgba(255, 255, 255, .3); }
+.pick-cancel:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .72; } }
 
 /* ---------- 路径动画增强（纯渲染层） ---------- */
@@ -153,6 +239,20 @@ body {
   to { stroke-dashoffset: 0; }
 }
 
+/* 路径外发光（F6A，纯渲染层）：宽半透明绿带 + 呼吸投影，随路径图层清理 */
+.path-glow {
+  filter: drop-shadow(0 0 6px rgba(43, 217, 141, .55));
+  animation: pathGlow 2.4s ease-in-out infinite;
+}
+@keyframes pathGlow {
+  0%, 100% { filter: drop-shadow(0 0 5px rgba(43, 217, 141, .4)); }
+  50% { filter: drop-shadow(0 0 16px rgba(43, 217, 141, .9)); }
+}
+/* 途经节点脉冲（F6A）：小黄点轻微呼吸，不参与交互 */
+.leaflet-overlay-pane path.pulse-node { transform-box: fill-box; transform-origin: center; animation: nodePulse 1.6s ease-in-out infinite; }
+@keyframes nodePulse { 0%, 100% { opacity: .75; transform: scale(.8); } 50% { opacity: 1; transform: scale(1.15); } }
+#map.path-touring { cursor: progress; }
+
 /* ---------- 右侧面板 ---------- */
 .panel {
   width: 384px; flex-shrink: 0; display: flex; flex-direction: column;
@@ -178,13 +278,40 @@ body {
 
 .section-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: #33453b; }
 .hint { font-size: 12px; color: #5b6f64; line-height: 1.6; }
-.empty { font-size: 12px; color: #9aab9f; text-align: center; padding: 12px 0; }
+.empty { font-size: 12px; color: #5b6f64; text-align: center; padding: 12px 0; }
+/* 零长度路径提示（结果区 aria-live）：深色文字保证 >=4.5:1 对比度 */
+.query-notice {
+  margin-top: 8px; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid #e5c37a; background: #fff8e8; color: #5c4300;
+  font-size: 12px; line-height: 1.5;
+}
 .hidden-file { display: none; }
 
 /* ---------- 查询结果 ---------- */
 .result-card {
   margin-top: 4px; background: #f2f9f5; border: 1px solid #d8eee1;
-  border-radius: 12px; padding: 10px 12px;
+  border-radius: 12px; padding: 10px 12px; position: relative; overflow: hidden;
+  animation: resultIn .5s cubic-bezier(.2, .8, .2, 1) both;
+}
+.result-card::after {
+  content: ''; position: absolute; top: 0; bottom: 0; left: -60%; width: 45%;
+  background: linear-gradient(100deg, transparent, rgba(255, 255, 255, .65), transparent);
+  transform: skewX(-18deg); pointer-events: none;
+  animation: resultSheen 1.2s ease-out .25s both;
+}
+@keyframes resultIn {
+  from { opacity: 0; transform: translateY(10px) scale(.98); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes resultSheen {
+  from { left: -60%; }
+  to { left: 120%; }
+}
+.result-head b { text-shadow: 0 0 14px rgba(31, 157, 107, .35); animation: numberPop .55s cubic-bezier(.2, .8, .2, 1) both; }
+@keyframes numberPop {
+  0% { transform: scale(.82); opacity: .4; }
+  60% { transform: scale(1.08); }
+  100% { transform: scale(1); opacity: 1; }
 }
 .result-head { display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: #2c4a3a; }
 .result-head b { color: #1f9d6b; font-size: 15px; }
@@ -225,6 +352,7 @@ body.dark .stop-ghost { border-color: #2fa06b; }
 
 /* ---------- 单车 ---------- */
 .bike-list { display: flex; flex-direction: column; gap: 8px; }
+.bike-pager { display: flex; justify-content: center; margin-top: 10px; }
 .bike-card {
   border: 1px solid #e3ebe6; border-left: 3px solid #cfd9d3; border-radius: 10px;
   padding: 10px 12px; background: #fff; transition: box-shadow .2s;
@@ -273,10 +401,25 @@ body.dark .stop-ghost { border-color: #2fa06b; }
   .map-side { height: 54vh; flex: none; }
   .panel { width: 100%; height: 46vh; border-left: none; border-top: 1px solid #e3ebe6; }
   .legend {
-    left: 10px; right: 10px; bottom: 10px;
+    left: 10px; right: 10px; bottom: 96px;  /* 让开 Leaflet 右下角缩放/归属控件 */
     flex-wrap: wrap; justify-content: center; gap: 4px 10px;
     border-radius: 12px; padding: 6px 10px;
   }
+  .panel .el-button,
+  .panel .el-button--small,
+  .pick-cancel { min-height: 44px; }
+}
+
+/* ---------- 窄屏工具条折叠（≤640px；触控目标 ≥44px） ---------- */
+@media (max-width: 640px) {
+  .map-tools {
+    top: 60px; right: 10px; flex-direction: column; align-items: flex-end; gap: 6px;
+    max-height: calc(100% - 70px); overflow-y: auto; padding: 2px;
+  }
+  .tools-toggle { display: inline-flex; align-items: center; justify-content: center; }
+  .map-tools:not(.open) .tool-btn:not(.tools-toggle) { display: none; }
+  .tool-btn { flex: none; width: 44px; height: 44px; font-size: 17px; }
+  .tool-btn.wide { width: auto; min-width: 44px; padding: 0 14px; font-size: 13px; }
 }
 
 /* ---------- 夜模式（body.dark；纯视觉，瓦片用 CSS 滤镜近似暗色） ---------- */
@@ -286,7 +429,8 @@ body.dark .panel { background: #16211b; border-left-color: #24352c; }
 body.dark .ph-title { color: #9fd9bd; }
 body.dark .section-title { color: #b9cbc0; }
 body.dark .hint { color: #8ba394; }
-body.dark .empty { color: #6d8274; }
+body.dark .empty { color: #8ba394; }
+body.dark .query-notice { background: #2a2414; border-color: #6b5724; color: #ffe3a0; }
 body.dark .panel-tabs .el-tabs__item { color: #9db3a6; }
 body.dark .panel-tabs .el-tabs__item.is-active { color: #4fb98d; }
 
@@ -364,8 +508,48 @@ body.dark #demo-caption { background: rgba(8, 16, 12, .92); }
 .chart-box {
   height: 150px; margin-top: 8px; padding: 4px;
   border: 1px solid #d8eee1; border-radius: 10px; background: #fff;
+  position: relative; z-index: 1;
 }
 body.dark .chart-box { background: #1b2921; border-color: #2c4036; }
+.chart-3d { box-shadow: 0 8px 26px rgba(31, 157, 107, .16); animation: chart3dGlow 3.6s ease-in-out infinite; }
+@keyframes chart3dGlow {
+  0%, 100% { box-shadow: 0 6px 20px rgba(31, 157, 107, .12); }
+  50% { box-shadow: 0 10px 34px rgba(31, 157, 107, .32); }
+}
+
+/* 洞察页背景粒子/光晕（F6A，纯展示；不遮挡图表交互） */
+#pane-insight { position: relative; }
+#insight-fx {
+  position: absolute; inset: 0; z-index: 0; overflow: hidden; pointer-events: none;
+  background:
+    radial-gradient(ellipse at 20% 10%, rgba(31, 157, 107, .12), transparent 55%),
+    radial-gradient(ellipse at 85% 70%, rgba(74, 125, 191, .12), transparent 60%);
+  animation: insightGlow 6s ease-in-out infinite alternate;
+}
+@keyframes insightGlow { from { opacity: .55; } to { opacity: 1; } }
+#insight-fx i {
+  position: absolute; bottom: -10px; width: 4px; height: 4px; border-radius: 50%;
+  background: #7fd3ab; box-shadow: 0 0 8px rgba(127, 211, 171, .9);
+  animation: insightFloat 7s linear infinite;
+}
+#insight-fx i:nth-child(1) { left: 6%; animation-delay: 0s; }
+#insight-fx i:nth-child(2) { left: 16%; animation-delay: -1.2s; animation-duration: 8.4s; }
+#insight-fx i:nth-child(3) { left: 27%; animation-delay: -2.8s; animation-duration: 6.2s; background: #8ab4ff; }
+#insight-fx i:nth-child(4) { left: 38%; animation-delay: -.6s; animation-duration: 9s; }
+#insight-fx i:nth-child(5) { left: 49%; animation-delay: -3.4s; animation-duration: 7.4s; background: #ffd166; }
+#insight-fx i:nth-child(6) { left: 60%; animation-delay: -4.1s; animation-duration: 8.8s; }
+#insight-fx i:nth-child(7) { left: 71%; animation-delay: -1.8s; animation-duration: 6.6s; background: #8ab4ff; }
+#insight-fx i:nth-child(8) { left: 81%; animation-delay: -5.2s; animation-duration: 9.6s; }
+#insight-fx i:nth-child(9) { left: 90%; animation-delay: -2.2s; animation-duration: 7.8s; background: #ffd166; }
+#insight-fx i:nth-child(10) { left: 96%; animation-delay: -6.1s; animation-duration: 8.2s; }
+@keyframes insightFloat {
+  from { transform: translateY(0) scale(.7); opacity: 0; }
+  12% { opacity: 1; }
+  85% { opacity: .8; }
+  to { transform: translateY(-520px) scale(1.25); opacity: 0; }
+}
+#pane-insight > .section-title, #pane-insight > .hint { position: relative; z-index: 1; }
+body.dark #insight-fx { opacity: .8; }
 
 /* 电影模式（自动演示）：地图画幅上下黑边 + UI 让位（纯展示）
    黑边在 .map-side 层（z 900：高于 Leaflet 全部 pane 与地图浮层 500-650，低于字幕 1200）；
@@ -479,3 +663,13 @@ body.dark .leaflet-control-minimap { border-color: rgba(20, 30, 25, .9) !importa
 body.dark .trace-caption { background: rgba(8, 16, 12, .92); }
 .result-actions { display: inline-flex; align-items: center; }
 .result-actions .el-button + .el-button { margin-left: 8px; }
+
+/* 无障碍：系统开启“减少动态效果”时停掉 CSS 循环/入场动画（JS 镜头飞行另见 map.js） */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

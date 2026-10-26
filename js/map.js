@@ -16,6 +16,8 @@ window.MapCtl = (function () {
   let radiusCircle = null;    // 停车半径圈（还车预览，纯渲染）
   let heatLayerRef = null;    // 节点连接热力图（leaflet.heat，纯渲染）
   let pathWhite = null;   // 当前白色描边（与红线同步生长）
+  let pathGlow = null;    // 路线外发光层（纯视觉，随 layers.path 清理）
+  let tourToken = null;   // 起终点镜头巡游令牌（用户拖动/新绘制时失效）
   let drawSeq = 0;        // 绘制序号（防跨次定时器/监听误生长）
   let growState = null;   // 生长进行中状态 { els, readyEl, timer, zoomHandler }
   let pendingGrow = null; // 等待相机停稳后启动生长的 { seq, cancel }
@@ -38,13 +40,17 @@ window.MapCtl = (function () {
   // 单车图层：内联 lucide bike 图标（ISC），divIcon 由 CSS 着色
   const BIKE_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18.5" cy="17.5" r="3.5"/><circle cx="5.5" cy="17.5" r="3.5"/><circle cx="15" cy="5" r="1"/><path d="M12 17.5V14l-3-3 4-3 2 3h2"/></svg>';
 
+  let bikeIconCache = null; // 所有单车 marker 复用同一个 divIcon，避免每次渲染新建实例
   function bikeIcon() {
-    return L.divIcon({
-      className: 'bike-marker',
-      html: '<span class="bike-marker-inner">' + BIKE_SVG + '</span>',
-      iconSize: [22, 22],
-      iconAnchor: [11, 11]
-    });
+    if (!bikeIconCache) {
+      bikeIconCache = L.divIcon({
+        className: 'bike-marker',
+        html: '<span class="bike-marker-inner">' + BIKE_SVG + '</span>',
+        iconSize: [22, 22],
+        iconAnchor: [11, 11]
+      });
+    }
+    return bikeIconCache;
   }
 
   // 渲染单车：nodeId>0 用图上节点坐标；nodeId<0 优先查节点索引（临时节点），否则用自带经纬度
@@ -80,15 +86,20 @@ window.MapCtl = (function () {
     });
     L.control.zoom({ position: 'bottomright' }).addTo(map);
     map.attributionControl.setPrefix(false);
+    // 离线矢量底图同样使用 OSM 路网数据，署名不能因关闭 Leaflet 前缀而丢失。
+    map.attributionControl.addAttribution('路网数据 © OpenStreetMap contributors');
     map.on('click', (e) => {
       if (clickCb) clickCb(e.latlng);
     });
+    // 用户主动拖动即取消镜头巡游，避免定时器抢回视图
+    map.on('dragstart', stopEndsTour);
     layers.edges = L.layerGroup().addTo(map);
     layers.nodes = L.layerGroup().addTo(map);
     layers.path = L.layerGroup().addTo(map);
     layers.misc = L.layerGroup().addTo(map);
     layers.bikes = L.layerGroup().addTo(map);
     layers.trace = L.layerGroup().addTo(map); // 逐步演示高亮（独立图层，随路径清理）
+    layers.tempPath = L.layerGroup().addTo(map); // 大屏临时规划（独立于主查询路径）
     map.setView([28.6778, 115.9237], 17);
   }
 
@@ -122,7 +133,8 @@ window.MapCtl = (function () {
 
     for (const n of graph.nodes) {
       const st = n.isTemp ? STYLE.temp : (STYLE[n.type] || STYLE.intersection);
-      const m = L.circleMarker([n.lat, n.lon], st).addTo(layers.nodes);
+      // 节点点选/悬停已由地图统一处理；标记不进入 Tab 序列（F3）
+      const m = L.circleMarker([n.lat, n.lon], Object.assign({ keyboard: false }, st)).addTo(layers.nodes);
       const display = n.isTemp ? 'T' + (-n.id) + '（临时节点）' : n.name;
       m.bindTooltip(tipEl(display), { direction: 'top', offset: [0, -6], opacity: 0.95 });
       if (n.type === 'parking' && !n.isTemp) {
@@ -198,8 +210,41 @@ window.MapCtl = (function () {
     pendingGrow = { seq: seq, cancel: function () { map.off('moveend', h); clearTimeout(t); } };
   }
 
+  // 起终点镜头巡游（F6A）：先 flyTo 起点，再 flyTo 终点，最后回到全程 fit。
+  // 纯展示；新绘制/清路径/用户拖动会通过 tourToken 立即失效，不阻塞任何业务。
+  function stopEndsTour() {
+    tourToken = null;
+    try { if (map) map.getContainer().classList.remove('path-touring'); } catch (e) { /* 忽略 */ }
+  }
+
+  function startEndsTour(pts, seq) {
+    stopEndsTour();
+    if (!map || !pts || pts.length < 2) return;
+    const token = {};
+    tourToken = token;
+    const alive = () => tourToken === token && seq === drawSeq;
+    const start = pts[0];
+    const end = pts[pts.length - 1];
+    const zoom = Math.max(map.getZoom(), 18);
+    try { map.getContainer().classList.add('path-touring'); } catch (e) { /* 忽略 */ }
+    setTimeout(() => {
+      if (!alive()) return;
+      try { map.flyTo(start, zoom, { duration: 0.9 }); } catch (e) { /* 忽略 */ }
+    }, 1500);
+    setTimeout(() => {
+      if (!alive()) return;
+      try { map.flyTo(end, zoom, { duration: 0.9 }); } catch (e) { /* 忽略 */ }
+    }, 2700);
+    setTimeout(() => {
+      if (!alive()) return;
+      try { map.flyToBounds(L.latLngBounds(pts), { padding: [40, 40], duration: 1.0 }); } catch (e) { /* 忽略 */ }
+    }, 3900);
+    setTimeout(() => { if (alive()) stopEndsTour(); }, 5100);
+  }
+
   // 绘制路径（含白色描边与起终点标记）
-  // opts: { animate=true 生长动画, autoplay=true 建后自动回放, fit=true 视野跟随, speed=400 回放速度 }
+  // opts: { animate=true 生长动画, autoplay=true 建后自动回放, fit=true 视野跟随,
+  //         speed=400 回放速度, endsTour=true 绘制后镜头巡游起点/终点 }
   function drawPath(pathIds, opts) {
     opts = opts || {};
     const animate = opts.animate !== false;
@@ -216,6 +261,12 @@ window.MapCtl = (function () {
       console.warn('[map] drawPath 缺少节点，已跳过绘制：', pathIds.filter((id) => !nodeIndex.has(id)));
       return; // 任一节点缺失则不画残线
     }
+    try {
+      pathGlow = L.polyline(pts, {
+        color: '#2bd98d', weight: 16, opacity: 0.2, lineCap: 'round', lineJoin: 'round',
+        interactive: false, className: 'path-glow'
+      }).addTo(layers.path);
+    } catch (e) { pathGlow = null; } // 发光层失败不影响基础路径
     pathWhite = L.polyline(pts, { color: '#ffffff', weight: 8, opacity: 0.75, interactive: false }).addTo(layers.path);
     pathRed = L.polyline(pts, { color: '#e5484d', weight: 4.5, opacity: 0.95, interactive: false, className: 'flow-line' }).addTo(layers.path);
     drawSeq++;
@@ -261,12 +312,21 @@ window.MapCtl = (function () {
     } catch (e) { trackPlayer = null; }
     const s = nodeIndex.get(pathIds[0]);
     const t = nodeIndex.get(pathIds[pathIds.length - 1]);
+    // 途经节点脉冲（纯展示）：小黄点依次呼吸，强化路径方向感；失败静默降级
+    try {
+      for (let i = 1; i < pts.length - 1; i++) {
+        L.circleMarker(pts[i], {
+          radius: 3, color: '#ffffff', weight: 1, fillColor: '#ffd166', fillOpacity: 0.9,
+          interactive: false, keyboard: false, className: 'pulse-node'
+        }).addTo(layers.path);
+      }
+    } catch (e) { /* 纯视觉失败不影响路径 */ }
     if (s) {
-      L.circleMarker([s.lat, s.lon], { radius: 7, color: '#ffffff', weight: 2, fillColor: '#2fa06b', fillOpacity: 1, className: 'pulse-start' })
+      L.circleMarker([s.lat, s.lon], { radius: 7, color: '#ffffff', weight: 2, fillColor: '#2fa06b', fillOpacity: 1, keyboard: false, className: 'pulse-start' })
         .bindTooltip(tipEl('起点：' + s.name), { direction: 'top' }).addTo(layers.path);
     }
     if (t) {
-      L.circleMarker([t.lat, t.lon], { radius: 7, color: '#ffffff', weight: 2, fillColor: '#e5484d', fillOpacity: 1, className: 'pulse-end' })
+      L.circleMarker([t.lat, t.lon], { radius: 7, color: '#ffffff', weight: 2, fillColor: '#e5484d', fillOpacity: 1, keyboard: false, className: 'pulse-end' })
         .bindTooltip(tipEl('终点：' + t.name), { direction: 'top' }).addTo(layers.path);
       // 雷达锁点（纯展示）：终点雷达扩散 + 四角锁定框，clearPath 时随 layers.path 一起清除
       L.marker([t.lat, t.lon], {
@@ -278,14 +338,19 @@ window.MapCtl = (function () {
         })
       }).addTo(layers.path);
     }
-    if (opts.fit !== false) map.flyToBounds(L.latLngBounds(pts), { padding: [40, 40], duration: 1.2 });
+    if (opts.fit !== false) {
+      map.flyToBounds(L.latLngBounds(pts), { padding: [40, 40], duration: 1.2 });
+      if (opts.endsTour) startEndsTour(pts, drawSeq);
+    }
   }
 
   function clearPath() {
     drawSeq++; // 使旧的待生长回调失效
+    stopEndsTour(); // 取消起终点镜头巡游
     if (pendingGrow) { pendingGrow.cancel(); pendingGrow = null; }
     endGrow();
     pathWhite = null;
+    pathGlow = null;
     lastPathPts = null;
     settleTrackWaiters(); // 清理即视为"本段回放结束"，放行等待者
     if (trackPlayer) {
@@ -319,11 +384,56 @@ window.MapCtl = (function () {
     }
   }
 
+  // 大屏临时规划路径：使用独立图层，不触碰主查询的路径/回放状态。
+  // 退出大屏或下一次规划时由 clearTempPath 清理，主查询红线与 TrackPlayer 保持原样。
+  function drawTempPath(pathIds, opts) {
+    opts = opts || {};
+    clearTempPath();
+    if (!pathIds || pathIds.length < 2) return false;
+    const pts = [];
+    for (const id of pathIds) {
+      const n = nodeIndex.get(id);
+      if (!n) return false;
+      pts.push([n.lat, n.lon]);
+    }
+    L.polyline(pts, {
+      color: '#ffffff', weight: 8, opacity: 0.7, interactive: false, className: 'bs-route-casing'
+    }).addTo(layers.tempPath);
+    L.polyline(pts, {
+      color: '#e5484d', weight: 4.5, opacity: 0.95, interactive: false, className: 'bs-route'
+    }).addTo(layers.tempPath);
+    if (opts.fit !== false) map.flyToBounds(L.latLngBounds(pts), { padding: [40, 40], duration: 1 });
+    return true;
+  }
+
+  function drawTempVariants(pathLists) {
+    if (!pathLists || !pathLists.length) return;
+    for (const ids of pathLists) {
+      if (!ids || ids.length < 2) continue;
+      const pts = [];
+      let ok = true;
+      for (const id of ids) {
+        const n = nodeIndex.get(id);
+        if (!n) { ok = false; break; }
+        pts.push([n.lat, n.lon]);
+      }
+      if (!ok) continue;
+      L.polyline(pts, {
+        color: '#7a8a99', weight: 3, opacity: 0.55, dashArray: '6 8',
+        interactive: false, className: 'bs-route-variant'
+      }).addTo(layers.tempPath);
+    }
+  }
+
+  function clearTempPath() {
+    if (layers.tempPath) layers.tempPath.clearLayers();
+  }
+
   function showPick(latlng, label) {
     layers.misc.clearLayers();
     const m = L.circleMarker(latlng, {
       radius: 7, color: '#ffffff', weight: 2, fillColor: '#f59e0b', fillOpacity: 1,
-      className: 'pulse-pick'
+      interactive: false, keyboard: false, className: 'pulse-pick'
     }).addTo(layers.misc);
     if (label) m.bindTooltip(tipEl(label), { direction: 'top' }).openTooltip();
   }
@@ -335,7 +445,7 @@ window.MapCtl = (function () {
     traceClear();
     L.circleMarker([n.lat, n.lon], {
       radius: 9, color: '#ffd166', weight: 3, fillColor: '#ffb703', fillOpacity: .55,
-      className: 'pulse-trace', interactive: false
+      className: 'pulse-trace', interactive: false, keyboard: false
     }).bindTooltip(tipEl(n.name), { direction: 'top', offset: [0, -8], opacity: .95 }).openTooltip()
       .addTo(layers.trace);
     return true;
@@ -382,6 +492,13 @@ window.MapCtl = (function () {
     }
     trackPlayer.pause();
     return false;
+  }
+
+  // 幂等暂停：无实例/已暂停/已结束都视为已暂停，供自动演示停止时调用
+  function trackPause() {
+    if (!trackPlayer || trackPlayer.isPaused || trackPlayer.finished) return false;
+    try { trackPlayer.pause(); } catch (e) { return false; }
+    return true;
   }
 
   function trackReplay() {
@@ -480,6 +597,9 @@ window.MapCtl = (function () {
     renderGraph: renderGraph,
     drawPath: drawPath,
     drawVariants: drawVariants,
+    drawTempPath: drawTempPath,
+    drawTempVariants: drawTempVariants,
+    clearTempPath: clearTempPath,
     renderBikes: renderBikes,
     clearPath: clearPath,
     showPick: showPick,
@@ -497,6 +617,7 @@ window.MapCtl = (function () {
     traceClear: traceClear,
     showRadius: showRadius,
     trackToggle: trackToggle,
+    trackPause: trackPause,
     trackReplay: trackReplay,
     trackSetSpeed: trackSetSpeed,
     trackSeek: trackSeek,

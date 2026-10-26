@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>青山湖校区 · 3D 数字孪生</title>
+  <link rel="stylesheet" href="vendor/maplibre-gl.css" />
+  <link rel="stylesheet" href="css/map3d.css" />
+</head>
+<body>
+  <div id="map3d" role="region" aria-label="青山湖校区三维地图"></div>
+
+  <header class="m3d-top">
+    <div class="m3d-brand">
+      <div class="m3d-kicker">CAMPUS DIGITAL TWIN</div>
+      <h1>青山湖校区 · 3D 校园</h1>
+    </div>
+    <div class="m3d-actions">
+      <button id="online-btn" type="button">在线底图</button>
+      <button id="fly-btn" type="button">镜头飞行</button>
+      <a href="index.html">返回工作台</a>
+    </div>
+  </header>
+
+  <aside class="m3d-panel" aria-label="3D 路线查询">
+    <div class="m3d-stats" id="stats">加载中…</div>
+    <label class="m3d-field">起点
+      <select id="from" aria-label="3D 路线起点"></select>
+    </label>
+    <label class="m3d-field">终点
+      <select id="to" aria-label="3D 路线终点"></select>
+    </label>
+    <button id="route-btn" class="m3d-primary" type="button">规划 3D 路线</button>
+    <div id="result" class="m3d-result" aria-live="polite">选择起终点后规划路线。</div>
+  </aside>
+
+  <div class="m3d-foot">
+    建筑 © GlobalBuildingAtlas (CC BY-NC 4.0) · 路网数据 © OpenStreetMap contributors · 在线底图 © 高德地图
+  </div>
+
+  <div id="m3d-loading" class="m3d-loading" role="status" aria-live="polite">
+    <div class="m3d-spinner"></div>
+    <div id="m3d-loading-text">正在加载三维校园…</div>
+    <button id="m3d-retry" class="m3d-retry" type="button" onclick="location.reload()" aria-label="重新加载 3D 校园">重试</button>
+  </div>
+
+  <script src="vendor/maplibre-gl.js"></script>
+  <script src="dist/campus_core.js"></script>
+  <script src="dist/data_campus.js"></script>
+  <script src="dist/data_3d.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/map3d.js"></script>
+</body>
+</html>

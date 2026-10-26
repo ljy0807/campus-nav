@@ -3,12 +3,23 @@
 window.Api = (function () {
   let mod = null;
   let initP = null; // 并发/重复调用共享同一个加载 Promise（幂等）
+  const INIT_TIMEOUT_MS = 15000;
 
   async function init() {
     if (mod) return mod;
     if (!initP) {
-      initP = CampusNav().then((m) => { mod = m; return m; }) // 工厂函数由 web/dist/campus_core.js 提供
-        .catch((e) => { initP = null; throw e; });
+      let timer = 0;
+      const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error('WASM 引擎加载超时（15 秒），请重试'));
+        }, INIT_TIMEOUT_MS);
+      });
+      // 工厂函数由 web/dist/campus_core.js 提供；超时/失败后清空 initP，
+      // 让启动页的重试路径可以重新初始化，同时并发调用仍共享同一个 Promise。
+      initP = Promise.race([Promise.resolve().then(() => CampusNav()), timeout])
+        .then((m) => { mod = m; return m; })
+        .catch((e) => { initP = null; throw e; })
+        .finally(() => { if (timer) clearTimeout(timer); });
     }
     return initP;
   }
@@ -40,6 +51,7 @@ window.Api = (function () {
     getBikes: () => call('getBikes'),
     getTemps: () => call('getTemps'),
     status: () => call('status'),
+    snapshot: () => call('snapshot'),
     nearestNode: (lat, lon) => call('nearestNode', lat, lon),
     shortestPath: (from, to) => call('shortestPath', from, to),
     topPaths: (from, to, k) => call('topPaths', from, to, k),
@@ -57,7 +69,7 @@ window.Api = (function () {
     precheckBikes: (csv) => call('precheckBikes', csv),
     precheckTemps: (csv) => call('precheckTemps', csv),
     save: () => call('save'),
-    markSaved: () => call('markSaved'),
+    markSaved: (revision) => call('markSaved', revision),
     repairGhosts: () => call('repairGhosts')
   };
 })();
